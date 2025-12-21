@@ -110,6 +110,12 @@ AC_ARG_ENABLE([gpow],
   [enable_gpow=$enableval],
   [enable_gpow=yes])
 
+AC_ARG_ENABLE([sharding],
+  [AS_HELP_STRING([--enable-sharding],
+  [enable sharding support (default is no)])],
+  [enable_sharding=$enableval],
+  [enable_sharding=no])
+
 AC_ARG_WITH([miniupnpc],
   [AS_HELP_STRING([--with-miniupnpc],
   [enable UPNP (default is yes if libminiupnpc is found)])],
@@ -171,7 +177,7 @@ AC_ARG_ENABLE([lcov],
   [enable lcov testing (default is no)])],
   [use_lcov=yes],
   [use_lcov=no])
-  
+
 AC_ARG_ENABLE([lcov-branch-coverage],
   [AS_HELP_STRING([--enable-lcov-branch-coverage],
   [enable lcov testing branch coverage (default is no)])],
@@ -1155,6 +1161,16 @@ else
   AC_MSG_RESULT(no)
 fi
 
+dnl enable sharding support
+AC_MSG_CHECKING([if sharding should be enabled])
+if test x$enable_sharding = xyes; then
+  AC_MSG_RESULT(yes)
+  AC_DEFINE_UNQUOTED([ENABLE_SHARDING],[1],[Define to 1 to enable sharding functions])
+else
+  AC_MSG_RESULT(no)
+  AC_DEFINE_UNQUOTED([ENABLE_SHARDING],[0],[Define to 1 to enable sharding functions])
+fi
+
 dnl enable upnp support
 AC_MSG_CHECKING([whether to build with support for UPnP])
 if test x$have_miniupnpc = xno; then
@@ -1377,10 +1393,11 @@ case ${OS} in
    ;;
 esac
 
-echo 
+echo
 echo "Options used to compile and link:"
 echo "  with wallet   = $enable_wallet"
 echo "  with GPoW     = $enable_gpow"
+echo "  with sharding = $enable_sharding"
 echo "  with gui / qt = $bitcoin_enable_qt"
 if test x$bitcoin_enable_qt != xno; then
     echo "    qt version  = $bitcoin_qt_got_major_vers"
@@ -1392,7 +1409,7 @@ echo "  with bench    = $use_bench"
 echo "  with upnp     = $use_upnp"
 echo "  debug enabled = $enable_debug"
 echo "  werror        = $enable_werror"
-echo 
+echo
 echo "  target os     = $TARGET_OS"
 echo "  build os      = $BUILD_OS"
 echo

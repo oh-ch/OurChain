@@ -26,6 +26,9 @@
 #include "utilmoneystr.h"
 #include "validation.h"
 #include "validationinterface.h"
+#if ENABLE_SHARDING
+#include "sharding/sharding.h"
+#endif
 
 #include <algorithm>
 #include <queue>
@@ -200,6 +203,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     UpdateTime(pblock, chainparams.GetConsensus(), pindexPrev);
     pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainparams.GetConsensus());
     pblock->nNonce = 0;
+#if ENABLE_SHARDING
+    pblock->nShardId = nShardId;
+#endif
     pblocktemplate->vTxSigOpsCost[0] = WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*pblock->vtx[0]);
 
     CValidationState state;
