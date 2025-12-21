@@ -65,4 +65,9 @@ bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& i
  */
 bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interrupt);
 
+#if ENABLE_SHARDING
+/** Add cross-shard transaction to relay map for relaying without adding to mempool */
+void AddCrossShardTransactionToRelay(const CTransactionRef& tx);
+#endif
+
 #endif // BITCOIN_NET_PROCESSING_H

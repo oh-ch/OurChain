@@ -37,6 +37,9 @@ public:
 #else
     uint32_t nNonce;
 #endif
+#if ENABLE_SHARDING
+    uint32_t nShardId;
+#endif
 
     CBlockHeader()
     {
@@ -60,6 +63,9 @@ public:
             READWRITE(hashGPoW);
         }
 #endif
+#if ENABLE_SHARDING
+        READWRITE(nShardId);
+#endif
     }
 
     void SetNull()
@@ -73,6 +79,9 @@ public:
 #if ENABLE_GPoW
         nPrecisionTime = 0;
         hashGPoW.SetNull();
+#endif
+#if ENABLE_SHARDING
+        nShardId = 0;
 #endif
     }
 
@@ -148,6 +157,9 @@ public:
 #if ENABLE_GPoW
         block.nPrecisionTime = nPrecisionTime;
         block.hashGPoW = hashGPoW;
+#endif
+#if ENABLE_SHARDING
+        block.nShardId = nShardId;
 #endif
         return block;
     }

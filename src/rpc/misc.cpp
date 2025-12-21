@@ -24,6 +24,10 @@
 #endif
 #include "warnings.h"
 
+#if ENABLE_SHARDING
+#include "sharding/sharding.h"
+#endif
+
 #include <stdint.h>
 #ifdef HAVE_MALLOC_INFO
 #include <malloc.h>
@@ -638,12 +642,40 @@ UniValue echo(const JSONRPCRequest& request)
     return request.params;
 }
 
+#if ENABLE_SHARDING
+UniValue getshardinginfo(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 0)
+        throw std::runtime_error(
+            "getshardinginfo\n"
+            "\nReturns an object containing sharding state information.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"enabled\": true|false,      (boolean) whether sharding is enabled\n"
+            "  \"shardcount\": n,             (numeric) total number of shards in the network\n"
+            "  \"shardid\": n,                (numeric) the shard ID this node belongs to\n"
+            "}\n"
+            "\nExamples:\n" +
+            HelpExampleCli("getshardinginfo", "") + HelpExampleRpc("getshardinginfo", ""));
+
+    UniValue obj(UniValue::VOBJ);
+    obj.push_back(Pair("enabled", nShardCount > 1));
+    obj.push_back(Pair("shardcount", (int)nShardCount));
+    obj.push_back(Pair("shardid", (int)nShardId));
+
+    return obj;
+}
+#endif // ENABLE_SHARDING
+
 static const CRPCCommand commands[] =
     {
         //  category              name                      actor (function)         okSafeMode
         //  --------------------- ------------------------  -----------------------  ----------
         {"control", "getinfo", &getinfo, true, {}}, /* uses wallet if enabled */
         {"control", "getmemoryinfo", &getmemoryinfo, true, {"mode"}},
+#if ENABLE_SHARDING
+        {"control", "getshardinginfo", &getshardinginfo, true, {}},
+#endif
         {"util", "validateaddress", &validateaddress, true, {"address"}}, /* uses wallet if enabled */
         {"util", "createmultisig", &createmultisig, true, {"nrequired", "keys"}},
         {"util", "verifymessage", &verifymessage, true, {"address", "signature", "message"}},

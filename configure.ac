@@ -110,6 +110,12 @@ AC_ARG_ENABLE([gpow],
   [enable_gpow=$enableval],
   [enable_gpow=no])
 
+AC_ARG_ENABLE([sharding],
+  [AS_HELP_STRING([--enable-sharding],
+  [enable sharding support (default is no)])],
+  [enable_sharding=$enableval],
+  [enable_sharding=no])
+
 AC_ARG_WITH([miniupnpc],
   [AS_HELP_STRING([--with-miniupnpc],
   [enable UPNP (default is yes if libminiupnpc is found)])],
@@ -1096,6 +1102,16 @@ else
   AC_DEFINE_UNQUOTED([ENABLE_GPoW],[0],[Define to 0 to disable GPoW functions])
 fi
 
+dnl enable sharding support
+AC_MSG_CHECKING([if sharding should be enabled])
+if test x$enable_sharding = xyes; then
+  AC_MSG_RESULT(yes)
+  AC_DEFINE_UNQUOTED([ENABLE_SHARDING],[1],[Define to 1 to enable sharding functions])
+else
+  AC_MSG_RESULT(no)
+  AC_DEFINE_UNQUOTED([ENABLE_SHARDING],[0],[Define to 1 to enable sharding functions])
+fi
+
 dnl enable upnp support
 AC_MSG_CHECKING([whether to build with support for UPnP])
 if test x$have_miniupnpc = xno; then
@@ -1322,6 +1338,7 @@ echo
 echo "Options used to compile and link:"
 echo "  with wallet   = $enable_wallet"
 echo "  with GPoW     = $enable_gpow"
+echo "  with sharding = $enable_sharding"
 echo "  with gui / qt = $bitcoin_enable_qt"
 if test x$bitcoin_enable_qt != xno; then
     echo "    qt version  = $bitcoin_qt_got_major_vers"

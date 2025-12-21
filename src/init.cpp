@@ -55,6 +55,10 @@
 #include "OurChain/gpowserver.h"
 #endif
 
+#if ENABLE_SHARDING
+#include "sharding/sharding.h"
+#endif
+
 #ifndef WIN32
 #include <signal.h>
 #endif
@@ -497,6 +501,12 @@ std::string HelpMessage(HelpMessageMode mode)
     strUsage += HelpMessageOpt("-whitelistrelay", strprintf(_("Accept relayed transactions received from whitelisted peers even when not relaying transactions (default: %d)"), DEFAULT_WHITELISTRELAY));
     strUsage += HelpMessageOpt("-whitelistforcerelay", strprintf(_("Force relay of transactions from whitelisted peers even if they violate local relay policy (default: %d)"), DEFAULT_WHITELISTFORCERELAY));
 
+#if ENABLE_SHARDING
+    strUsage += HelpMessageGroup(_("Sharding options:"));
+    strUsage += HelpMessageOpt("-shardcount=<n>", strprintf(_("Total number of shards in the network (default: %u)"), DEFAULT_SHARD_COUNT));
+    strUsage += HelpMessageOpt("-shardid=<n>", strprintf(_("The shard ID this node belongs to, 0-indexed (default: %u)"), DEFAULT_SHARD_ID));
+#endif
+
     strUsage += HelpMessageGroup(_("Block creation options:"));
     strUsage += HelpMessageOpt("-blockmaxweight=<n>", strprintf(_("Set maximum BIP141 block weight (default: %d)"), DEFAULT_BLOCK_MAX_WEIGHT));
     strUsage += HelpMessageOpt("-blockmaxsize=<n>", strprintf(_("Set maximum block size in bytes (default: %d)"), DEFAULT_BLOCK_MAX_SIZE));
@@ -904,6 +914,24 @@ bool AppInitParameterInteraction()
     // ********************************************************* Step 2: parameter interactions
 
     // also see: InitParameterInteraction()
+
+#if ENABLE_SHARDING
+    // Validate sharding parameters
+    nShardCount = gArgs.GetArg("-shardcount", DEFAULT_SHARD_COUNT);
+    nShardId = gArgs.GetArg("-shardid", DEFAULT_SHARD_ID);
+
+    if (nShardCount == 0) {
+        return InitError(_("Shard count must be at least 1."));
+    }
+
+    if (nShardId >= nShardCount) {
+        return InitError(strprintf(_("Shard ID (%u) must be less than shard count (%u)."), nShardId, nShardCount));
+    }
+
+    if (nShardCount > 1) {
+        LogPrintf("Sharding enabled: Node is assigned to shard %u of %u total shards (using txid/blockid %% shardcount)\n", nShardId, nShardCount);
+    }
+#endif
 
     // if using block pruning, then disallow txindex
     if (gArgs.GetArg("-prune", 0)) {
