@@ -1644,29 +1644,6 @@ bool CWalletTx::RelayWalletTransaction(CConnman* connman)
 {
     assert(pwallet->GetBroadcastTransactions());
     if (!IsCoinBase() && !isAbandoned() && GetDepthInMainChain() == 0) {
-#if ENABLE_SHARDING
-        uint256 hash = GetHash();
-        // Check if transaction belongs to our shard
-        auto& shardManager = ShardManager::GetInstance();
-        if (shardManager.IsTxCrossShard(hash)) {
-            // Cross-shard transaction: relay without adding to mempool
-            LogPrintf("Relaying cross-shard wtx %s %s\n",
-                      hash.ToString(), shardManager.FormatShardInfo(hash));
-            if (connman) {
-                // Add to relay map for cross-shard transactions
-                shardManager.AddCrossShardTransactionToRelay(tx);
-
-                // Relay the transaction
-                CInv inv(MSG_TX, hash);
-                connman->ForEachNode([&inv](CNode* pnode) {
-                    pnode->PushInventory(inv);
-                });
-                return true;
-            }
-            return false;
-        }
-#endif
-
         CValidationState state;
         /* GetDepthInMainChain already catches known conflicts. */
         if (InMempool() || AcceptToMemoryPool(maxTxFee, state)) {
@@ -2905,33 +2882,13 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey, CCon
         mapRequestCount[wtxNew.GetHash()] = 0;
 
         if (fBroadcastTransactions) {
-            // Broadcast
-#if ENABLE_SHARDING
-            // Check if transaction belongs to our shard
-            uint256 hash = wtxNew.GetHash();
-            auto& shardManager = ShardManager::GetInstance();
-            if (shardManager.IsTxCrossShard(hash)) {
-                // Cross-shard transaction: skip mempool but still relay
-                LogPrintf("CommitTransaction(): Cross-shard transaction %s %s, relaying without mempool\n",
-                          hash.ToString(), shardManager.FormatShardInfo(hash));
-                wtxNew.RelayWalletTransaction(connman);
-            } else {
-                // Our shard: try to add to mempool
-                if (!wtxNew.AcceptToMemoryPool(maxTxFee, state)) {
-                    LogPrintf("CommitTransaction(): Transaction cannot be broadcast immediately, %s\n", state.GetRejectReason());
-                    // TODO: if we expect the failure to be long term or permanent, instead delete wtx from the wallet and return failure.
-                } else {
-                    wtxNew.RelayWalletTransaction(connman);
-                }
-            }
-#else
+            // Broadcast: node decides (AcceptToMemoryPool) — same-shard → mempool, cross-shard → relay only
             if (!wtxNew.AcceptToMemoryPool(maxTxFee, state)) {
                 LogPrintf("CommitTransaction(): Transaction cannot be broadcast immediately, %s\n", state.GetRejectReason());
                 // TODO: if we expect the failure to be long term or permanent, instead delete wtx from the wallet and return failure.
             } else {
                 wtxNew.RelayWalletTransaction(connman);
             }
-#endif
         }
     }
     return true;

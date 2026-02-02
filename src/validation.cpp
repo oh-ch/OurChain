@@ -512,6 +512,14 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         return state.Invalid(false, REJECT_DUPLICATE, "txn-already-in-mempool");
     }
 
+#if ENABLE_SHARDING
+    // Cross-shard for this node: accept for relay only, do not add to mempool
+    if (ShardManager::GetInstance().IsTxCrossShard(hash)) {
+        ShardManager::GetInstance().AddCrossShardTransactionToRelay(ptx);
+        return true;
+    }
+#endif
+
     // Check for conflicts with in-memory transactions
     std::set<uint256> setConflicts;
     {
@@ -2447,6 +2455,8 @@ static CBlockIndex* FindMostWorkChain()
                 CBlockIndex*& pindexShardBestInvalid = ShardManager::GetInstance().GetBestInvalid(shardId);
                 if (fFailedChain && (pindexShardBestInvalid == nullptr || pindexNew->nChainWork > pindexShardBestInvalid->nChainWork))
                     pindexShardBestInvalid = pindexNew;
+                if (fFailedChain && shardId == ShardManager::GetInstance().GetMyId() && (pindexBestInvalid == nullptr || pindexNew->nChainWork > pindexBestInvalid->nChainWork))
+                    pindexBestInvalid = pindexNew;
                 CBlockIndex* pindexFailed = pindexNew;
                 // Remove the entire chain from the set.
                 while (pindexTest != pindexFailed) {
@@ -2459,9 +2469,13 @@ static CBlockIndex* FindMostWorkChain()
                         mapBlocksUnlinked.insert(std::make_pair(pindexFailed->pprev, pindexFailed));
                     }
                     shardCandidates.erase(pindexFailed);
+                    if (shardId == ShardManager::GetInstance().GetMyId())
+                        setBlockIndexCandidates.erase(pindexFailed);
                     pindexFailed = pindexFailed->pprev;
                 }
                 shardCandidates.erase(pindexTest);
+                if (shardId == ShardManager::GetInstance().GetMyId())
+                    setBlockIndexCandidates.erase(pindexTest);
                 fInvalidAncestor = true;
                 break;
             }
@@ -2961,6 +2975,11 @@ static bool ReceivedBlockTransactions(const CBlock& block, CValidationState& sta
             CBlockIndex* pindexShardTip = shardChain.Tip();
             if (pindexShardTip == nullptr || !shardCandidates.value_comp()(pindex, pindexShardTip)) {
                 shardCandidates.insert(pindex);
+            }
+            if (shardId == ShardManager::GetInstance().GetMyId()) {
+                if (chainActive.Tip() == nullptr || !setBlockIndexCandidates.value_comp()(pindex, chainActive.Tip())) {
+                    setBlockIndexCandidates.insert(pindex);
+                }
             }
 #else
             if (chainActive.Tip() == nullptr || !setBlockIndexCandidates.value_comp()(pindex, chainActive.Tip())) {
