@@ -25,7 +25,7 @@
 #include "warnings.h"
 
 #if ENABLE_SHARDING
-#include "sharding/sharding.h"
+#include "sharding/shard.h"
 #endif
 
 #include <stdint.h>
@@ -659,9 +659,9 @@ UniValue getshardinginfo(const JSONRPCRequest& request)
             HelpExampleCli("getshardinginfo", "") + HelpExampleRpc("getshardinginfo", ""));
 
     UniValue obj(UniValue::VOBJ);
-    obj.push_back(Pair("enabled", nShardCount > 1));
-    obj.push_back(Pair("shardcount", (int)nShardCount));
-    obj.push_back(Pair("shardid", (int)nShardId));
+    obj.push_back(Pair("enabled", ShardManager::GetInstance().GetTotalCount() > 1));
+    obj.push_back(Pair("shardcount", (int)ShardManager::GetInstance().GetTotalCount()));
+    obj.push_back(Pair("shardid", (int)ShardManager::GetInstance().GetMyId()));
 
     return obj;
 }

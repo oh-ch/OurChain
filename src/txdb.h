@@ -79,6 +79,10 @@ public:
     bool GetContState(const uint256& ctid, ContState& cs) const override;
     bool HaveCoin(const COutPoint& outpoint) const override;
     uint256 GetBestBlock() const override;
+#if ENABLE_SHARDING
+    void SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) override;
+    uint256 GetShardBestBlock(uint32_t shardId) const override;
+#endif
     std::vector<uint256> GetHeadBlocks() const override;
     bool BatchWrite(CCoinsMap& mapCoins, CContStateMap& mapContState, const uint256& hashBlock) override;
     CCoinsViewCursor* Cursor() const override;

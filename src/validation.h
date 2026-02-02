@@ -11,12 +11,15 @@
 #endif
 
 #include "amount.h"
+#include "arith_uint256.h" // For UintToArith256
 #include "coins.h"
 #include "fs.h"
 #include "policy/feerate.h"
-#include "protocol.h" // For CMessageHeader::MessageStartChars
+#include "primitives/block.h" // For CBlockHeader
+#include "protocol.h"         // For CMessageHeader::MessageStartChars
 #include "script/script_error.h"
 #include "sync.h"
+#include "utiltime.h" // For TIME_ERROR
 #include "versionbits.h"
 
 #include <algorithm>
@@ -45,6 +48,56 @@ struct ChainTxData;
 struct PrecomputedTransactionData;
 struct LockPoints;
 
+#if ENABLE_SHARDING
+// Block index work comparator (used for sorting block candidates)
+// Note: Full definition needed here because it's used as a template parameter in std::set
+struct CBlockIndexWorkComparator {
+    bool operator()(const CBlockIndex* pa, const CBlockIndex* pb) const
+    {
+#if ENABLE_GPoW
+        // First sort by most total work, ...
+        if (pa->nChainWork > pb->nChainWork) return false;
+        if (pa->nChainWork < pb->nChainWork) return true;
+
+        if (pa->GetBlockTime() < pb->GetBlockTime()) return false;
+        if (pa->GetBlockTime() > pb->GetBlockTime()) return true;
+
+        if (pa->GetPrecisionBlockTime() < pb->GetPrecisionBlockTime()) {
+            if (pb->GetPrecisionBlockTime() - pa->GetPrecisionBlockTime() > TIME_ERROR) // more than time error
+                return false;
+        }
+        if (pa->GetPrecisionBlockTime() > pb->GetPrecisionBlockTime()) {
+            if (pa->GetPrecisionBlockTime() - pb->GetPrecisionBlockTime() > TIME_ERROR) // more than time error
+                return true;
+        }
+
+        // ... Compare GPoW, Smaller GPoW win ...
+        CBlockHeader ba, bb;
+        ba = pa->GetBlockHeader();
+        bb = pb->GetBlockHeader();
+        if (UintToArith256(ba.hashGPoW) < UintToArith256(bb.hashGPoW)) return false;
+        if (UintToArith256(ba.hashGPoW) > UintToArith256(bb.hashGPoW)) return true;
+
+#else
+        // First sort by most total work, ...
+        if (pa->nChainWork > pb->nChainWork) return false;
+        if (pa->nChainWork < pb->nChainWork) return true;
+
+        // ... then by earliest time received, ...
+        if (pa->nSequenceId < pb->nSequenceId) return false;
+        if (pa->nSequenceId > pb->nSequenceId) return true;
+
+#endif // ENABLE_GPoW
+       //  Use pointer address as tie breaker (should only happen with blocks
+       //  loaded from disk, as those all have id 0).
+        if (pa < pb) return false;
+        if (pa > pb) return true;
+
+        // Identical blocks.
+        return false;
+    }
+};
+#endif // ENABLE_SHARDING
 /** Default for DEFAULT_WHITELISTRELAY. */
 static const bool DEFAULT_WHITELISTRELAY = true;
 /** Default for DEFAULT_WHITELISTFORCERELAY. */
@@ -394,6 +447,14 @@ void InitScriptExecutionCache();
 /** Functions for disk access for blocks */
 bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams);
 bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams);
+
+#if ENABLE_SHARDING
+// Wrapper namespace for sharding code to access static WriteBlockToDisk
+namespace sharding {
+bool WriteBlockToDisk_Wrapper(const CBlock& block, CDiskBlockPos& pos,
+                              const CMessageHeader::MessageStartChars& messageStart);
+}
+#endif
 
 /** Functions for validating blocks and updating the block tree */
 

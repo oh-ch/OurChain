@@ -26,6 +26,9 @@ static const char DB_TXINDEX = 't';
 static const char DB_BLOCK_INDEX = 'b';
 
 static const char DB_BEST_BLOCK = 'B';
+#if ENABLE_SHARDING
+static const char DB_BEST_BLOCK_SHARD = 'b'; // Per-shard best blocks: 'b' + shardId -> hashBlock
+#endif
 static const char DB_HEAD_BLOCKS = 'H';
 static const char DB_FLAG = 'F';
 static const char DB_REINDEX_FLAG = 'R';
@@ -102,6 +105,21 @@ uint256 CCoinsViewDB::GetBestBlock() const
         return uint256();
     return hashBestChain;
 }
+
+#if ENABLE_SHARDING
+void CCoinsViewDB::SetShardBestBlock(uint32_t shardId, const uint256& hashBlock)
+{
+    db.Write(std::make_pair(DB_BEST_BLOCK_SHARD, shardId), hashBlock);
+}
+
+uint256 CCoinsViewDB::GetShardBestBlock(uint32_t shardId) const
+{
+    uint256 hashBlock;
+    if (!db.Read(std::make_pair(DB_BEST_BLOCK_SHARD, shardId), hashBlock))
+        return uint256();
+    return hashBlock;
+}
+#endif
 
 std::vector<uint256> CCoinsViewDB::GetHeadBlocks() const
 {

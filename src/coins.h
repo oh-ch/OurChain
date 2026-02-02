@@ -17,7 +17,19 @@
 #include <assert.h>
 #include <stdint.h>
 
+#include <map>
+#include <set>
 #include <unordered_map>
+
+#if defined(HAVE_CONFIG_H)
+#include "config/bitcoin-config.h"
+#endif
+
+#if ENABLE_SHARDING
+// Forward declaration for TransactionInfo (defined in sharding/shard.h)
+// Note: Using forward declaration to avoid circular dependency with merge.h
+struct TransactionInfo;
+#endif
 
 /**
  * A UTXO entry.
@@ -218,6 +230,17 @@ public:
     //! Retrieve the block hash whose state this CCoinsView currently represents
     virtual uint256 GetBestBlock() const;
 
+#if ENABLE_SHARDING
+    //! Set the best block for a specific shard
+    virtual void SetShardBestBlock(uint32_t shardId, const uint256& hashBlock);
+
+    //! Retrieve the best block for a specific shard
+    virtual uint256 GetShardBestBlock(uint32_t shardId) const;
+
+    //! Spend a coin for a specific shard
+    virtual bool SpendShardCoin(const COutPoint& outpoint);
+#endif
+
     //! Retrieve the range of blocks that may have been only partially written.
     //! If the database is in a consistent state, the result is the empty vector.
     //! Otherwise, a two-element vector is returned consisting of the new and
@@ -251,6 +274,11 @@ public:
     bool GetContState(const uint256& ctid, ContState& cs) const override;
     bool HaveCoin(const COutPoint& outpoint) const override;
     uint256 GetBestBlock() const override;
+#if ENABLE_SHARDING
+    void SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) override;
+    uint256 GetShardBestBlock(uint32_t shardId) const override;
+    bool SpendShardCoin(const COutPoint& outpoint) override;
+#endif
     std::vector<uint256> GetHeadBlocks() const override;
     void SetBackend(CCoinsView& viewIn);
     bool BatchWrite(CCoinsMap& mapCoins, CContStateMap& mapContState, const uint256& hashBlock) override;
@@ -271,6 +299,11 @@ protected:
     mutable CCoinsMap cacheCoins;
     mutable CContStateMap cacheContState;
 
+#if ENABLE_SHARDING
+    /* Per-shard best blocks cache */
+    mutable std::map<uint32_t, uint256> mapShardBestBlocks;
+#endif
+
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage;
 
@@ -283,6 +316,11 @@ public:
     bool HaveCoin(const COutPoint& outpoint) const override;
     uint256 GetBestBlock() const override;
     void SetBestBlock(const uint256& hashBlock);
+#if ENABLE_SHARDING
+    void SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) override;
+    uint256 GetShardBestBlock(uint32_t shardId) const override;
+    bool SpendShardCoin(const COutPoint& outpoint) override;
+#endif
     bool BatchWrite(CCoinsMap& mapCoins, CContStateMap& mapContState, const uint256& hashBlock) override;
     CCoinsViewCursor* Cursor() const override
     {
@@ -373,6 +411,9 @@ private:
 // (pre-BIP34) cases.
 void AddCoins(CCoinsViewCache& cache, const CTransaction& tx, int nHeight, bool check = false);
 
+#if ENABLE_SHARDING
+void AddCoinsShard(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check = false);
+#endif
 //! Utility function to find any unspent output with a given txid.
 // This function can be quite expensive because in the event of a transaction
 // which is not found in the cache, it can cause up to MAX_OUTPUTS_PER_BLOCK

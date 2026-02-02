@@ -36,7 +36,7 @@
 #endif
 
 #if ENABLE_SHARDING
-#include "sharding/sharding.h"
+#include "sharding/shard.h"
 #endif
 
 #if defined(NDEBUG)
@@ -129,13 +129,6 @@ MapRelay mapRelay;
 /** Expiration-time ordered list of (expire time, relay map entry) pairs, protected by cs_main). */
 std::deque<std::pair<int64_t, MapRelay::iterator>> vRelayExpiration;
 
-#if ENABLE_SHARDING
-/** Cross-shard relay map, protected by cs_main. Stores cross-shard transactions that we relay but don't keep in mempool. */
-typedef std::map<uint256, CTransactionRef> MapCrossShardRelay;
-MapCrossShardRelay mapCrossShardRelay;
-/** Expiration-time ordered list of (expire time, cross-shard relay map entry) pairs, protected by cs_main. */
-std::deque<std::pair<int64_t, MapCrossShardRelay::iterator>> vCrossShardRelayExpiration;
-#endif
 } // namespace
 
 //////////////////////////////////////////////////////////////////////////////
@@ -913,7 +906,7 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
                mempool.exists(inv.hash) ||
                mapOrphanTransactions.count(inv.hash) ||
 #if ENABLE_SHARDING
-               mapCrossShardRelay.count(inv.hash) || // Check cross-shard relay map
+               ShardManager::GetInstance().HaveCrossShardTransaction(inv.hash) || // Check cross-shard relay map
 #endif
                pcoinsTip->HaveCoinInCache(COutPoint(inv.hash, 0)) || // Best effort: only try output 0 and 1
                pcoinsTip->HaveCoinInCache(COutPoint(inv.hash, 1));
@@ -934,20 +927,6 @@ static void RelayTransaction(const CTransaction& tx, CConnman& connman)
     });
 }
 
-#if ENABLE_SHARDING
-// Helper function to add cross-shard transaction to cross-shard relay map
-// Called from wallet and network processing when relaying cross-shard transactions
-void AddCrossShardTransactionToRelay(const CTransactionRef& tx)
-{
-    LOCK(cs_main);
-    uint256 hash = tx->GetHash();
-    int64_t nNow = GetTimeMicros();
-    auto ret = mapCrossShardRelay.insert(std::make_pair(hash, tx));
-    if (ret.second) {
-        vCrossShardRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
-    }
-}
-#endif
 
 static void RelayAddress(const CAddress& addr, bool fReachable, CConnman& connman)
 {
@@ -1134,9 +1113,9 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
 #if ENABLE_SHARDING
                 } else {
                     // Check cross-shard relay map
-                    auto miCrossShard = mapCrossShardRelay.find(inv.hash);
-                    if (miCrossShard != mapCrossShardRelay.end()) {
-                        connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *miCrossShard->second));
+                    CTransactionRef txCrossShard = ShardManager::GetInstance().GetCrossShardTransaction(inv.hash);
+                    if (txCrossShard) {
+                        connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *txCrossShard));
                         push = true;
                     } else if (pfrom->timeLastMempoolReq) {
 #else
@@ -1799,24 +1778,20 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
 #if ENABLE_SHARDING
         // Check if transaction belongs to our shard
-        bool fOurShard = true;
-        if (nShardCount > 1) {
-            fOurShard = isOurShard(tx.GetHash());
-            if (!fOurShard) {
-                // Cross-shard transaction: don't add to mempool but relay it
-                uint256 txHash = tx.GetHash();
-                uint32_t txShard = (txHash.GetUint64(0) & 0xFFFFFFFF) % nShardCount;
-                LogPrint(BCLog::NET, "Cross-shard transaction %s (shard %u, we are shard %u), relaying without adding to mempool\n",
-                         txHash.ToString(), txShard, nShardId);
+        if (ShardManager::GetInstance().IsTxCrossShard(tx.GetHash())) {
+            // Cross-shard transaction: don't add to mempool but relay it
+            uint256 txHash = tx.GetHash();
+            uint32_t txShard = ShardManager::GetInstance().GetShardForHash(txHash);
+            LogPrint(BCLog::NET, "Cross-shard transaction %s (shard %u, we are shard %u), relaying without adding to mempool\n",
+                     txHash.ToString(), txShard, ShardManager::GetInstance().GetMyId());
 
-                // Add to relay map for relaying (similar to how mempool transactions are relayed)
-                AddCrossShardTransactionToRelay(ptx);
+            // Add to relay map for relaying (similar to how mempool transactions are relayed)
+            ShardManager::GetInstance().AddCrossShardTransactionToRelay(ptx);
 
-                // Relay the transaction
-                RelayTransaction(tx, connman);
-                pfrom->nLastTXTime = GetTime();
-                return true;
-            }
+            // Relay the transaction
+            RelayTransaction(tx, connman);
+            pfrom->nLastTXTime = GetTime();
+            return true;
         }
 #endif
 
@@ -3139,25 +3114,22 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                     auto txinfo = mempool.info(hash);
                     if (!txinfo.tx) {
 #if ENABLE_SHARDING
-                        // Check if this is a cross-shard transaction in mapCrossShardRelay
-                        auto miCrossShard = mapCrossShardRelay.find(hash);
-                        if (miCrossShard != mapCrossShardRelay.end()) {
-                            // Cross-shard transaction found in mapCrossShardRelay, send INV for it
-                            if (pto->pfilter && !pto->pfilter->IsRelevantAndUpdate(*miCrossShard->second)) {
-                                continue;
-                            }
-                            // Expire old cross-shard relay messages (same cleanup pattern as mapRelay)
-                            while (!vCrossShardRelayExpiration.empty() && vCrossShardRelayExpiration.front().first < nNow) {
-                                mapCrossShardRelay.erase(vCrossShardRelayExpiration.front().second);
-                                vCrossShardRelayExpiration.pop_front();
-                            }
-                            // Send INV for cross-shard transaction
-                            vInv.push_back(CInv(MSG_TX, hash));
-                            nRelayedTransactions++;
-                            pto->filterInventoryKnown.insert(hash);
-                            if (vInv.size() == MAX_INV_SZ) {
-                                connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
-                                vInv.clear();
+                        // Check if this is a cross-shard transaction in ShardManager relay
+                        if (ShardManager::GetInstance().HaveCrossShardTransaction(hash)) {
+                            CTransactionRef txCrossShard = ShardManager::GetInstance().GetCrossShardTransaction(hash);
+                            if (txCrossShard) {
+                                if (pto->pfilter && !pto->pfilter->IsRelevantAndUpdate(*txCrossShard)) {
+                                    continue;
+                                }
+                                ShardManager::GetInstance().ExpireCrossShardRelay(nNow);
+                                // Send INV for cross-shard transaction
+                                vInv.push_back(CInv(MSG_TX, hash));
+                                nRelayedTransactions++;
+                                pto->filterInventoryKnown.insert(hash);
+                                if (vInv.size() == MAX_INV_SZ) {
+                                    connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
+                                    vInv.clear();
+                                }
                             }
                         }
 #endif

@@ -9,6 +9,9 @@
 #include "primitives/transaction.h"
 #include "serialize.h"
 #include "uint256.h"
+#if defined(HAVE_CONFIG_H)
+#include "config/bitcoin-config.h"
+#endif
 #if ENABLE_GPoW
 #include "gpow.h"
 #endif
@@ -39,6 +42,9 @@ public:
 #endif
 #if ENABLE_SHARDING
     uint32_t nShardId;
+    // Hash of previous block's (same shard) invalid transaction list
+    // This chains invalid lists to prevent tampering
+    uint256 hashPrevInvalidList;
 #endif
 
     CBlockHeader()
@@ -65,6 +71,7 @@ public:
 #endif
 #if ENABLE_SHARDING
         READWRITE(nShardId);
+        READWRITE(hashPrevInvalidList);
 #endif
     }
 
@@ -82,6 +89,9 @@ public:
 #endif
 #if ENABLE_SHARDING
         nShardId = 0;
+        // hashPrevInvalidList is null for genesis block (no previous block)
+        // For subsequent blocks, this should be set to hash of previous block's invalid list
+        hashPrevInvalidList.SetNull();
 #endif
     }
 
@@ -112,6 +122,11 @@ public:
     // network and disk
     std::vector<CTransactionRef> vtx;
 
+#if ENABLE_SHARDING
+    // Invalid transaction hashes - serialized for verification
+    std::vector<uint256> vInvalidTxHashes;
+#endif
+
     // memory only
     mutable std::vector<CTransactionRef> vvtx;
 
@@ -136,6 +151,9 @@ public:
     {
         READWRITE(*(CBlockHeader*)this);
         READWRITE(vtx);
+#if ENABLE_SHARDING
+        READWRITE(vInvalidTxHashes);
+#endif
     }
 
     void SetNull()
@@ -143,6 +161,9 @@ public:
         CBlockHeader::SetNull();
         vtx.clear();
         fChecked = false;
+#if ENABLE_SHARDING
+        vInvalidTxHashes.clear();
+#endif
     }
 
     CBlockHeader GetBlockHeader() const
@@ -160,6 +181,7 @@ public:
 #endif
 #if ENABLE_SHARDING
         block.nShardId = nShardId;
+        block.hashPrevInvalidList = hashPrevInvalidList;
 #endif
         return block;
     }

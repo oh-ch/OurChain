@@ -477,6 +477,10 @@ public:
         genesis = CreateGenesisBlock(GENESIS_BLOCK_TIME, GENESIE_BLOCK_PRECISION_TIME, n, 0x207fffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock == uint256S("0xf0abf13ce536cb0d4f0cc3a275cbc0001ca961ef8d17d5f7db2b855b3c2da567"));
+#elif ENABLE_SHARDING
+        genesis = CreateGenesisBlock(1536399020, 0, 0x207fffff, 1, 50 * COIN);
+        consensus.hashGenesisBlock = genesis.GetHash();
+        assert(consensus.hashGenesisBlock == uint256S("0x22659a3ed0a2efb99b1fd1ac6ed80fe87f6ec243075ec337d182b597d841792a"));
 #else
         genesis = CreateGenesisBlock(1536399020, 0, 0x207fffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();

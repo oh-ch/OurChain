@@ -56,7 +56,7 @@
 #endif
 
 #if ENABLE_SHARDING
-#include "sharding/sharding.h"
+#include "sharding/shard.h"
 #endif
 
 #ifndef WIN32
@@ -503,8 +503,8 @@ std::string HelpMessage(HelpMessageMode mode)
 
 #if ENABLE_SHARDING
     strUsage += HelpMessageGroup(_("Sharding options:"));
-    strUsage += HelpMessageOpt("-shardcount=<n>", strprintf(_("Total number of shards in the network (default: %u)"), DEFAULT_SHARD_COUNT));
-    strUsage += HelpMessageOpt("-shardid=<n>", strprintf(_("The shard ID this node belongs to, 0-indexed (default: %u)"), DEFAULT_SHARD_ID));
+    strUsage += HelpMessageOpt("-shardcount=<n>", strprintf(_("Total number of shards in the network (default: %u)"), DEFAULT_TOTAL_SHARD_COUNT));
+    strUsage += HelpMessageOpt("-shardid=<n>", strprintf(_("The shard ID this node belongs to, 0-indexed (default: %u)"), DEFAULT_MY_SHARD_ID));
 #endif
 
     strUsage += HelpMessageGroup(_("Block creation options:"));
@@ -917,20 +917,38 @@ bool AppInitParameterInteraction()
 
 #if ENABLE_SHARDING
     // Validate sharding parameters
-    nShardCount = gArgs.GetArg("-shardcount", DEFAULT_SHARD_COUNT);
-    nShardId = gArgs.GetArg("-shardid", DEFAULT_SHARD_ID);
+    // Get as int64_t first to validate for negative values
+    int64_t nShardCountArg = gArgs.GetArg("-shardcount", static_cast<int64_t>(DEFAULT_TOTAL_SHARD_COUNT));
+    int64_t nShardIdArg = gArgs.GetArg("-shardid", static_cast<int64_t>(DEFAULT_MY_SHARD_ID));
 
-    if (nShardCount == 0) {
+    if (nShardCountArg < 0) {
+        return InitError(_("Shard count cannot be negative."));
+    }
+
+    if (nShardCountArg == 0) {
         return InitError(_("Shard count must be at least 1."));
     }
 
-    if (nShardId >= nShardCount) {
-        return InitError(strprintf(_("Shard ID (%u) must be less than shard count (%u)."), nShardId, nShardCount));
+    if (nShardCountArg > UINT32_MAX) {
+        return InitError(_("Shard count is too large."));
     }
 
-    if (nShardCount > 1) {
-        LogPrintf("Sharding enabled: Node is assigned to shard %u of %u total shards (using txid/blockid %% shardcount)\n", nShardId, nShardCount);
+    if (nShardIdArg < 0) {
+        return InitError(_("Shard ID cannot be negative."));
     }
+
+    if (nShardIdArg > UINT32_MAX) {
+        return InitError(_("Shard ID is too large."));
+    }
+
+    if (nShardIdArg >= nShardCountArg) {
+        return InitError(strprintf(_("Shard ID (%u) must be less than shard count (%u)."), nShardIdArg, nShardCountArg));
+    }
+
+    if (nShardCountArg > 1) {
+        LogPrintf("Sharding enabled: Node is assigned to shard %u of %u total shards (using txid/blockid %% shardcount)\n", nShardIdArg, nShardCountArg);
+    }
+    ShardManager::GetInstance().Initialize(static_cast<uint32_t>(nShardCountArg), static_cast<uint32_t>(nShardIdArg));
 #endif
 
     // if using block pruning, then disallow txindex

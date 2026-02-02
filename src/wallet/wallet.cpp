@@ -34,7 +34,7 @@
 #include "wallet/coincontrol.h"
 
 #if ENABLE_SHARDING
-#include "sharding/sharding.h"
+#include "sharding/shard.h"
 #endif
 
 #include <assert.h>
@@ -1647,27 +1647,23 @@ bool CWalletTx::RelayWalletTransaction(CConnman* connman)
 #if ENABLE_SHARDING
         uint256 hash = GetHash();
         // Check if transaction belongs to our shard
-        bool fOurShard = true;
-        if (nShardCount > 1) {
-            fOurShard = isOurShard(hash);
-            if (!fOurShard) {
-                // Cross-shard transaction: relay without adding to mempool
-                uint32_t txShard = (hash.GetUint64(0) & 0xFFFFFFFF) % nShardCount;
-                LogPrintf("Relaying cross-shard wtx %s (shard %u, we are shard %u)\n",
-                          hash.ToString(), txShard, nShardId);
-                if (connman) {
-                    // Add to relay map for cross-shard transactions
-                    AddCrossShardTransactionToRelay(tx);
+        auto& shardManager = ShardManager::GetInstance();
+        if (shardManager.IsTxCrossShard(hash)) {
+            // Cross-shard transaction: relay without adding to mempool
+            LogPrintf("Relaying cross-shard wtx %s %s\n",
+                      hash.ToString(), shardManager.FormatShardInfo(hash));
+            if (connman) {
+                // Add to relay map for cross-shard transactions
+                shardManager.AddCrossShardTransactionToRelay(tx);
 
-                    // Relay the transaction
-                    CInv inv(MSG_TX, hash);
-                    connman->ForEachNode([&inv](CNode* pnode) {
-                        pnode->PushInventory(inv);
-                    });
-                    return true;
-                }
-                return false;
+                // Relay the transaction
+                CInv inv(MSG_TX, hash);
+                connman->ForEachNode([&inv](CNode* pnode) {
+                    pnode->PushInventory(inv);
+                });
+                return true;
             }
+            return false;
         }
 #endif
 
@@ -2912,14 +2908,12 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey, CCon
             // Broadcast
 #if ENABLE_SHARDING
             // Check if transaction belongs to our shard
-            bool fOurShard = true;
             uint256 hash = wtxNew.GetHash();
-            fOurShard = isOurShard(hash);
-            if (!fOurShard) {
+            auto& shardManager = ShardManager::GetInstance();
+            if (shardManager.IsTxCrossShard(hash)) {
                 // Cross-shard transaction: skip mempool but still relay
-                uint32_t txShard = (hash.GetUint64(0) & 0xFFFFFFFF) % nShardCount;
-                LogPrintf("CommitTransaction(): Cross-shard transaction %s (shard %u, we are shard %u), relaying without mempool\n",
-                          hash.ToString(), txShard, nShardId);
+                LogPrintf("CommitTransaction(): Cross-shard transaction %s %s, relaying without mempool\n",
+                          hash.ToString(), shardManager.FormatShardInfo(hash));
                 wtxNew.RelayWalletTransaction(connman);
             } else {
                 // Our shard: try to add to mempool

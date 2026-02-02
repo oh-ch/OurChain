@@ -217,6 +217,10 @@ public:
     //! Verification status of this block. See enum BlockStatus
     unsigned int nStatus;
 
+#if ENABLE_SHARDING
+    std::vector<uint256> vInvalidList;
+#endif
+
     //! block header
     int nVersion;
     uint256 hashMerkleRoot;
@@ -228,6 +232,10 @@ public:
     uint256 hashGPoW;
 #else
     uint32_t nNonce;
+#endif
+#if ENABLE_SHARDING
+    uint32_t nShardId;
+    uint256 hashPrevInvalidList;
 #endif
 
     //! (memory only) Sequential id assigned to distinguish order in which blocks are received.
@@ -261,6 +269,12 @@ public:
         nPrecisionTime = 0;
         hashGPoW = uint256();
 #endif
+#if ENABLE_SHARDING
+        nShardId = 0;
+        // hashPrevInvalidList is null for genesis block (no previous block)
+        // For subsequent blocks, this is copied from CBlockHeader
+        hashPrevInvalidList.SetNull();
+#endif
     }
 
     CBlockIndex()
@@ -280,6 +294,10 @@ public:
 #if ENABLE_GPoW
         nPrecisionTime = block.nPrecisionTime;
         hashGPoW = block.hashGPoW;
+#endif
+#if ENABLE_SHARDING
+        nShardId = block.nShardId;
+        hashPrevInvalidList = block.hashPrevInvalidList;
 #endif
     }
 
@@ -316,6 +334,10 @@ public:
 #if ENABLE_GPoW
         block.nPrecisionTime = nPrecisionTime;
         block.hashGPoW = hashGPoW;
+#endif
+#if ENABLE_SHARDING
+        block.nShardId = nShardId;
+        block.hashPrevInvalidList = hashPrevInvalidList;
 #endif
         return block;
     }
@@ -450,6 +472,10 @@ public:
         READWRITE(nPrecisionTime);
         READWRITE(hashGPoW);
 #endif
+#if ENABLE_SHARDING
+        READWRITE(VARINT(nShardId));
+        READWRITE(hashPrevInvalidList);
+#endif
     }
 
     uint256 GetBlockHash() const
@@ -464,6 +490,10 @@ public:
 #if ENABLE_GPoW
         block.nPrecisionTime = nPrecisionTime;
         block.hashGPoW = hashGPoW;
+#endif
+#if ENABLE_SHARDING
+        block.nShardId = nShardId;
+        block.hashPrevInvalidList = hashPrevInvalidList;
 #endif
         return block.GetHash();
     }

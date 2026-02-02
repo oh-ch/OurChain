@@ -27,7 +27,7 @@
 #include "validation.h"
 #include "validationinterface.h"
 #if ENABLE_SHARDING
-#include "sharding/sharding.h"
+#include "sharding/shard.h"
 #endif
 
 #include <algorithm>
@@ -204,7 +204,26 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainparams.GetConsensus());
     pblock->nNonce = 0;
 #if ENABLE_SHARDING
-    pblock->nShardId = nShardId;
+    pblock->nShardId = ShardManager::GetInstance().GetMyId();
+
+    // Set hashPrevInvalidList: hash of previous block's (same shard) invalid list
+    // For genesis block (pindexPrev == nullptr or height 0), hashPrevInvalidList is null
+    if (pindexPrev && pindexPrev->nHeight > 0) {
+        // Read previous block to get its invalid transaction hashes
+        CBlock blockPrev;
+        if (ReadBlockFromDisk(blockPrev, pindexPrev, chainparams.GetConsensus())) {
+            // Hash the previous block's invalid list
+            pblock->hashPrevInvalidList = ShardManager::GetInstance().HashInvalidList(blockPrev.vInvalidTxHashes);
+        } else {
+            // If we can't read the previous block, set to null (shouldn't happen in normal operation)
+            LogPrintf("CreateNewBlock: Warning - could not read previous block %s to get invalid list\n",
+                      pindexPrev->GetBlockHash().ToString());
+            pblock->hashPrevInvalidList.SetNull();
+        }
+    } else {
+        // Genesis block - hashPrevInvalidList is null (no previous block)
+        pblock->hashPrevInvalidList.SetNull();
+    }
 #endif
     pblocktemplate->vTxSigOpsCost[0] = WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*pblock->vtx[0]);
 

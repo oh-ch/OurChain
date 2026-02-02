@@ -63,6 +63,8 @@ BITCOIN_TESTS =\
   test/rpc_tests.cpp \
   test/sanity_tests.cpp \
   test/scheduler_tests.cpp \
+  sharding/test/transaction_distribution_tests.cpp \
+  sharding/test/block_process_tests.cpp \
   test/script_p2sh_tests.cpp \
   test/script_tests.cpp \
   test/scriptnum_tests.cpp \
