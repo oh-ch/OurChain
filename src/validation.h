@@ -448,14 +448,6 @@ void InitScriptExecutionCache();
 bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams);
 bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams);
 
-#if ENABLE_SHARDING
-// Wrapper namespace for sharding code to access static WriteBlockToDisk
-namespace sharding {
-bool WriteBlockToDisk_Wrapper(const CBlock& block, CDiskBlockPos& pos,
-                              const CMessageHeader::MessageStartChars& messageStart);
-}
-#endif
-
 /** Functions for validating blocks and updating the block tree */
 
 /** Context-independent validity checks */

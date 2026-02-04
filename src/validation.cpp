@@ -1000,19 +1000,6 @@ static bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMes
     return true;
 }
 
-#if ENABLE_SHARDING
-// Wrapper namespace to expose static WriteBlockToDisk for sharding code
-// This allows sharding code to call the static function without modifying it
-namespace sharding {
-bool WriteBlockToDisk_Wrapper(const CBlock& block, CDiskBlockPos& pos,
-                              const CMessageHeader::MessageStartChars& messageStart)
-{
-    // Call the static function in the same file
-    return WriteBlockToDisk(block, pos, messageStart);
-}
-} // namespace sharding
-#endif
-
 bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams)
 {
     block.SetNull();
@@ -1504,15 +1491,13 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
     }
 
 #if ENABLE_SHARDING
-    // Fast lookup for tx invalidated at merge time (these were never applied to the UTXO set).
-    std::set<uint256> invalidTxSet(block.vInvalidTxHashes.begin(), block.vInvalidTxHashes.end());
+    std::set<uint256> invalidTxSet(pindex->vInvalidList.begin(), pindex->vInvalidList.end());
 #endif
 
     // undo transactions in reverse order
     for (int i = block.vtx.size() - 1; i >= 0; i--) {
         const CTransaction& tx = *(block.vtx[i]);
 #if ENABLE_SHARDING
-        // Skip invalid transactions - they were never applied to the UTXO set
         if (invalidTxSet.count(tx.GetHash())) continue;
 #endif
         uint256 hash = tx.GetHash();
@@ -1819,10 +1804,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
     block.vvtx.clear();               // reset
 #if ENABLE_SHARDING
-    // Create a set of invalid transaction positions for fast lookup
-    // Invalid transactions are individually valid but conflict with other shards at merge time
-    // They go through all validation checks but are not applied to the UTXO set
-    std::set<uint256> invalidTxSet(block.vInvalidTxHashes.begin(), block.vInvalidTxHashes.end());
+    std::set<uint256> invalidTxSet(pindex->vInvalidList.begin(), pindex->vInvalidList.end());
     static uint32_t nMergeCount = 0;
     auto& shardManager = ShardManager::GetInstance();
 #endif
@@ -1878,7 +1860,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
 #if ENABLE_SHARDING
         if (shardManager.GetMergeStatus() == MERGE_STATUS_IN_PROGRESS) {
             // Handle merge case
-            shardManager.ProcessTransaction(pindex, tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back());
+            shardManager.MergeTransaction(pindex, tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back());
         } else {
             if (!invalidTxSet.count(tx.GetHash())) {
                 UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
@@ -1940,15 +1922,15 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         nMergeCount++;
         // if all shards' tips have processed, flush all txs to UTXO set and write invalid transactions to each shard's block
         if (nMergeCount == shardManager.GetTotalCount()) {
-            shardManager.UpdateCoins(view, pindex->nHeight);
-            shardManager.FlushInvalidTransactions();
             nMergeCount = 0;
             shardManager.SetMergeStatus(MERGE_STATUS_COMPLETED);
         }
     }
     view.SetShardBestBlock(pindex->nShardId, pindex->GetBlockHash());
     if ((pindex->nShardId == shardManager.GetMyId() && shardManager.GetMergeStatus() == MERGE_STATUS_NONE) || shardManager.GetMergeStatus() == MERGE_STATUS_COMPLETED) {
+        shardManager.UpdateCoins(view, pindex->nHeight);
         view.SetBestBlock(shardManager.GetpindexBestHeader(shardManager.GetMyId())->GetBlockHash());
+        LogPrintf("Shard %d merged with other shards at height %d\n", shardManager.GetMyId(), pindex->nHeight);
     }
 #else
     view.SetBestBlock(pindex->GetBlockHash());
@@ -2109,7 +2091,7 @@ static void DoWarning(const std::string& strWarning)
 void static UpdateTip(CBlockIndex* pindexNew, const CChainParams& chainParams)
 {
 #if ENABLE_SHARDING
-    auto& shardManager = ShardManager::GetInstance();
+    ShardManager& shardManager = ShardManager::GetInstance();
     shardManager.GetChain(pindexNew->nShardId).SetTip(pindexNew);
     MergeStatus mergeStatus = shardManager.GetMergeStatus();
     if (!(mergeStatus == MERGE_STATUS_COMPLETED || (pindexNew->nShardId == shardManager.GetMyId() && mergeStatus == MERGE_STATUS_NONE)))
@@ -2321,7 +2303,7 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
 {
 #if ENABLE_SHARDING
     assert(pindexNew->pprev == ShardManager::GetInstance().GetChain(pindexNew->nShardId).Tip());
-    auto& shardManager = ShardManager::GetInstance();
+    ShardManager& shardManager = ShardManager::GetInstance();
     shardManager.SetMergeStatus(MERGE_STATUS_NONE);
 #else
     assert(pindexNew->pprev == chainActive.Tip());
@@ -2684,6 +2666,9 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
     CBlockIndex* pindexNewTip = nullptr;
     int nStopAtHeight = gArgs.GetArg("-stopatheight", DEFAULT_STOPATHEIGHT);
     do {
+#if ENABLE_SHARDING
+        ShardManager& shardManager = ShardManager::GetInstance();
+#endif
         boost::this_thread::interruption_point();
         if (ShutdownRequested())
             break;
@@ -2695,13 +2680,13 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
             ConnectTrace connectTrace(mempool); // Destructed before cs_main is unlocked
 
 #if ENABLE_SHARDING
-            uint32_t shardId = pblock ? pblock->nShardId : ShardManager::GetInstance().GetMyId();
-            CBlockIndex* pindexOldTip = ShardManager::GetInstance().GetChain(shardId).Tip();
+            uint32_t shardId = pblock ? pblock->nShardId : shardManager.GetMyId();
+            CBlockIndex* pindexOldTip = shardManager.GetChain(shardId).Tip();
             if (pindexMostWork == nullptr) {
                 pindexMostWork = FindMostWorkChain(shardId);
             }
 
-            if (pindexMostWork == nullptr || pindexMostWork == ShardManager::GetInstance().GetChain(shardId).Tip())
+            if (pindexMostWork == nullptr || pindexMostWork == shardManager.GetChain(shardId).Tip())
                 return true;
 #else
             CBlockIndex* pindexOldTip = chainActive.Tip();
@@ -2724,8 +2709,8 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
                 pindexMostWork = nullptr;
             }
 #if ENABLE_SHARDING
-            pindexNewTip = ShardManager::GetInstance().GetChain(shardId).Tip();
-            pindexFork = ShardManager::GetInstance().GetChain(shardId).FindFork(pindexOldTip);
+            pindexNewTip = shardManager.GetChain(shardId).Tip();
+            pindexFork = shardManager.GetChain(shardId).FindFork(pindexOldTip);
 #else
             pindexNewTip = chainActive.Tip();
             pindexFork = chainActive.FindFork(pindexOldTip);
@@ -2747,7 +2732,7 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
         // Notifications/callbacks that can run without cs_main
 
 #if ENABLE_SHARDING
-        if (pindexNewTip->nShardId == ShardManager::GetInstance().GetMyId()) {
+        if (pindexNewTip->nShardId == shardManager.GetMyId()) {
             // Notify external listeners about the new tip.
             GetMainSignals().UpdatedBlockTip(pindexNewTip, pindexFork, fInitialDownload);
 

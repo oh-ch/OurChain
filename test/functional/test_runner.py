@@ -120,6 +120,7 @@ BASE_SCRIPTS= [
     'bip65-cltv-p2p.py',
     'uptime.py',
     'resendwallettransactions.py',
+    'sharding_rpc_distribution.py',  # skips if getshardinginfo not available
 ]
 
 EXTENDED_SCRIPTS = [

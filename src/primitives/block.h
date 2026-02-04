@@ -122,11 +122,6 @@ public:
     // network and disk
     std::vector<CTransactionRef> vtx;
 
-#if ENABLE_SHARDING
-    // Invalid transaction hashes - serialized for verification
-    std::vector<uint256> vInvalidTxHashes;
-#endif
-
     // memory only
     mutable std::vector<CTransactionRef> vvtx;
 
@@ -151,9 +146,6 @@ public:
     {
         READWRITE(*(CBlockHeader*)this);
         READWRITE(vtx);
-#if ENABLE_SHARDING
-        READWRITE(vInvalidTxHashes);
-#endif
     }
 
     void SetNull()
@@ -161,9 +153,6 @@ public:
         CBlockHeader::SetNull();
         vtx.clear();
         fChecked = false;
-#if ENABLE_SHARDING
-        vInvalidTxHashes.clear();
-#endif
     }
 
     CBlockHeader GetBlockHeader() const

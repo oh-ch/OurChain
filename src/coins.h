@@ -412,7 +412,7 @@ private:
 void AddCoins(CCoinsViewCache& cache, const CTransaction& tx, int nHeight, bool check = false);
 
 #if ENABLE_SHARDING
-void AddCoinsShard(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check = false);
+void AddShardCoins(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check = false);
 #endif
 //! Utility function to find any unspent output with a given txid.
 // This function can be quite expensive because in the event of a transaction

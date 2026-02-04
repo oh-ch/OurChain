@@ -206,14 +206,13 @@ bool CCoinsViewCache::SpendShardCoin(const COutPoint& outpoint)
     return true;
 }
 
-void AddCoinsShard(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check)
+void AddShardCoins(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check)
 {
-    bool fCoinbase = transactionInfo.isCoinbase;
     for (size_t i = 0; i < transactionInfo.vout.size(); ++i) {
-        bool overwrite = check ? cache.HaveCoin(COutPoint(txid, i)) : fCoinbase;
+        bool overwrite = check ? cache.HaveCoin(COutPoint(txid, i)) : false;
         // Always set the possible_overwrite flag to AddCoin for coinbase txn, in order to correctly
         // deal with the pre-BIP30 occurrences of duplicate coinbase transactions.
-        cache.AddCoin(COutPoint(txid, i), Coin(transactionInfo.vout[i], nHeight, fCoinbase), overwrite);
+        cache.AddCoin(COutPoint(txid, i), Coin(transactionInfo.vout[i], nHeight, false), overwrite);
     }
 }
 #endif
