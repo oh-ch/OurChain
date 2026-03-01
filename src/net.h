@@ -666,7 +666,11 @@ public:
     int64_t nNextInvSend;
     // Used for headers announcements - unfiltered blocks to relay
     // Also protected by cs_inventory
+#if ENABLE_SHARDING
+    std::map<uint32_t, std::vector<uint256>> vBlockHashesToAnnounce;
+#else
     std::vector<uint256> vBlockHashesToAnnounce;
+#endif
     // Used for BIP35 mempool sending, also protected by cs_inventory
     bool fSendMempool;
 
@@ -808,11 +812,19 @@ public:
         }
     }
 
+#if ENABLE_SHARDING
+    void PushBlockHash(uint32_t shardId, const uint256& hash)
+    {
+        LOCK(cs_inventory);
+        vBlockHashesToAnnounce[shardId].push_back(hash);
+    }
+#else
     void PushBlockHash(const uint256& hash)
     {
         LOCK(cs_inventory);
         vBlockHashesToAnnounce.push_back(hash);
     }
+#endif
 
     void AskFor(const CInv& inv);
 
