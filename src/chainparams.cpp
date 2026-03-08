@@ -55,6 +55,10 @@ static CBlock CreateGenesisBlock(const char* pszTimestamp, const CScript& genesi
     genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
     genesis.hashPrevBlock.SetNull();
     genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
+#if ENABLE_SHARDING
+    genesis.nShardId = 0;
+    genesis.hashPrevInvalidList.SetNull();
+#endif
 #if ENABLE_GPoW
     genesis.nPrecisionTime = nPrecisionTime;
     genesis.hashGPoW.SetNull();
