@@ -44,6 +44,10 @@ struct TransactionInfo {
     uint256 blockhash;
     std::vector<CTxIn> vin;
     std::vector<CTxOut> vout;
+
+    TransactionInfo() = default;
+    TransactionInfo(uint256 blockhash_in, const std::vector<CTxIn>& vin_in, const std::vector<CTxOut>& vout_in)
+        : blockhash(std::move(blockhash_in)), vin(vin_in), vout(vout_in) {}
 };
 
 // Default sharding configuration values
