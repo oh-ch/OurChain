@@ -33,6 +33,10 @@
 
 #include <atomic>
 
+#if ENABLE_SHARDING
+#include "sharding/shard.h"
+#endif
+
 class CBlockIndex;
 class CBlockTreeDB;
 class CChainParams;
@@ -320,7 +324,11 @@ void UnloadBlockIndex();
 /** Run an instance of the script checking thread */
 void ThreadScriptCheck();
 /** Check whether we are doing an initial block download (synchronizing from disk or network) */
+#if ENABLE_SHARDING
+bool IsInitialBlockDownload(uint32_t shardId = ShardManager::GetInstance().GetMyId());
+#else
 bool IsInitialBlockDownload();
+#endif
 /** Retrieve a transaction (from memory pool, or from disk, if possible) */
 bool GetTransaction(const uint256& hash, CTransactionRef& tx, const Consensus::Params& params, uint256& hashBlock, bool fAllowSlow = false);
 /** Find the best known block, and make it the tip of the block chain */

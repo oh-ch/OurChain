@@ -205,12 +205,8 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     pblock->nNonce = 0;
 #if ENABLE_SHARDING
     pblock->nShardId = ShardManager::GetInstance().GetMyId();
-    // For genesis block (pindexPrev == nullptr or height 0), hashPrevInvalidList is null
-    if (pindexPrev && pindexPrev->nHeight > 0) {
-        pblock->hashPrevInvalidList = ShardManager::GetInstance().HashInvalidList(pindexPrev->vInvalidList);
-    } else {
-        pblock->hashPrevInvalidList.SetNull();
-    }
+    assert(pindexPrev != nullptr);
+    pblock->hashPrevInvalidList = ShardManager::GetInstance().HashInvalidList(pindexPrev->vInvalidList);
 #endif
     pblocktemplate->vTxSigOpsCost[0] = WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*pblock->vtx[0]);
 

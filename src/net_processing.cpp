@@ -1000,6 +1000,7 @@ void PeerLogicValidation::UpdatedBlockTip(const CBlockIndex* pindexNew, const CB
             if (nNewHeight > (pnode->nStartingHeight != -1 ? pnode->nStartingHeight - 2000 : 0)) {
                 for (const uint256& hash : reverse_iterate(vHashes)) {
 #if ENABLE_SHARDING
+                    LogPrintf("Pushing block hash %s to peer %s\n", hash.ToString(), pnode->addr.ToString());
                     pnode->PushBlockHash(pindexNew->nShardId, hash);
 #else
                     pnode->PushBlockHash(hash);
@@ -1973,11 +1974,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
 #endif
 
+#if !ENABLE_SHARDING
         LOCK(cs_main);
         if (IsInitialBlockDownload() && !pfrom->fWhitelisted) {
             LogPrint(BCLog::NET, "Ignoring getheaders from peer=%d because node is in initial block download\n", pfrom->GetId());
             return true;
         }
+#endif
 
         CNodeState* nodestate = State(pfrom->GetId());
         const CBlockIndex* pindex = nullptr;
@@ -3246,6 +3249,9 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                 shardManager.SetpindexBestHeader(i, shardManager.GetChain(i).Tip());
             }
         }
+        if (pindexBestHeader == nullptr)
+            pindexBestHeader = chainActive.Tip();
+        
         bool fFetch = state.fPreferredDownload || (nPreferredDownload == 0 && !pto->fClient && !pto->fOneShot); // Download if this is a nice peer, or we have no nice peers and this one might do.
         bool fSyncStarted = false;
         CBlockIndex* pindexSyncHeader = nullptr;
