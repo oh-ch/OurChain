@@ -2111,6 +2111,10 @@ static void DoWarning(const std::string& strWarning)
     }
 }
 
+#if ENABLE_SHARDING
+CSemaphore sem_MergeShard(1);
+#endif
+
 /** Update chainActive and related internal data structures. */
 void static UpdateTip(CBlockIndex* pindexNew, const CChainParams& chainParams)
 {
@@ -2127,6 +2131,9 @@ void static UpdateTip(CBlockIndex* pindexNew, const CChainParams& chainParams)
         if (!(mergeStatus == MERGE_STATUS_COMPLETED || (pindexNew->nShardId == shardManager.GetMyId() && mergeStatus == MERGE_STATUS_NONE)))
             return;
         chainActive.SetTip(shardManager.GetpindexBestHeader(shardManager.GetMyId()));
+        if (mergeStatus == MERGE_STATUS_COMPLETED) {
+            sem_MergeShard.post();
+        }
     }
 #else
     chainActive.SetTip(pindexNew);
