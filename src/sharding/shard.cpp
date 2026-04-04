@@ -151,6 +151,20 @@ void ShardManager::ExpireCrossShardRelay(int64_t nNow)
     }
 }
 
+void ShardManager::CheckMergeCompleted(uint32_t height)
+{
+    if (height != m_currentMergeHeight) {
+        LogPrintf("Merge check: height changed from %d to %d\n", m_currentMergeHeight, height);
+        m_currentMergeHeight = height;
+        m_mergeCount = 0;
+    }
+    m_mergeCount++;
+    if (m_mergeCount == m_totalCount) {
+        m_mergeStatus = MERGE_STATUS_COMPLETED;
+        LogPrintf("Merge completed at height %d\n", height);
+    }
+}
+
 void ShardManager::MergeTransaction(CBlockIndex* pindex, const CTransaction& tx,
                                     CCoinsViewCache& inputs, CTxUndo& txundo)
 {

@@ -1826,7 +1826,6 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     block.vvtx.clear();               // reset
 #if ENABLE_SHARDING
     std::set<uint256> invalidTxSet(pindex->vInvalidList.begin(), pindex->vInvalidList.end());
-    static uint32_t nMergeCount = 0;
     auto& shardManager = ShardManager::GetInstance();
 #endif
     for (unsigned int i = 0; i < block.vtx.size(); i++) {
@@ -1940,14 +1939,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             // add this block to the view's block chain
 #if ENABLE_SHARDING
     if (shardManager.GetMergeStatus() == MERGE_STATUS_IN_PROGRESS) {
-        nMergeCount++;
-        LogPrintf("Shard %d is merging at height %d\n", pindex->nShardId, pindex->nHeight);
-        // if all shards' tips have processed, flush all txs to UTXO set and write invalid transactions to each shard's block
-        if (nMergeCount == shardManager.GetTotalCount()) {
-            nMergeCount = 0;
-            shardManager.SetMergeStatus(MERGE_STATUS_COMPLETED);
-            LogPrintf("Merge completed at height %d\n", pindex->nHeight);
-        }
+        shardManager.CheckMergeCompleted(pindex->nHeight);
     }
     view.SetShardBestBlock(pindex->nShardId, pindex->GetBlockHash());
     if (shardManager.GetMergeStatus() == MERGE_STATUS_COMPLETED) {
@@ -2343,6 +2335,15 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
     ShardManager& shardManager = ShardManager::GetInstance();
     assert(pindexNew->pprev == shardManager.GetChain(pindexNew->nShardId).Tip());
     shardManager.SetMergeStatus(MERGE_STATUS_NONE);
+    LogPrintf("Shard %d: indexNew->nHeight: %d, bestShardHeader->nHeight: %d, bestChainHeight: %d\n", pindexNew->nShardId, pindexNew->nHeight, shardManager.GetpindexBestHeader(pindexNew->nShardId)->nHeight, shardManager.GetBestChainHeight());
+    if (pindexNew->nHeight > 0) {
+        if (pindexNew->nHeight == shardManager.GetBestChainHeight() ||
+            (pindexNew->nHeight == shardManager.GetBestChainHeight() - 1 &&
+            pindexNew->nHeight == shardManager.GetCurrentMergeHeight())) {
+            shardManager.SetMergeStatus(MERGE_STATUS_IN_PROGRESS);
+            LogPrintf("Shard %d height %d merge in progress\n", pindexNew->nShardId, pindexNew->nHeight);
+        }
+    }
 #else
     assert(pindexNew->pprev == chainActive.Tip());
 #endif
@@ -2356,11 +2357,6 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
         pthisBlock = pblockNew;
     } else {
         pthisBlock = pblock;
-#if ENABLE_SHARDING
-        if (pindexNew->nHeight > 0 && shardManager.GetBestChainHeight() == pindexNew->nHeight) {
-            shardManager.SetMergeStatus(MERGE_STATUS_IN_PROGRESS);
-        }
-#endif
     }
     const CBlock& blockConnecting = *pthisBlock;
     // Apply the block atomically to the chain state.

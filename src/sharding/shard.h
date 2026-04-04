@@ -125,6 +125,8 @@ public:
     MergeStatus GetMergeStatus() const { return m_mergeStatus; }
     void SetMergeStatus(MergeStatus status) { m_mergeStatus = status; }
     int GetBestChainHeight() const { return m_bestChainHeight; }
+    uint32_t GetCurrentMergeHeight() const { return m_currentMergeHeight; }
+    void CheckMergeCompleted(uint32_t height);
 
     // Utilities
     uint256 HashInvalidList(const std::vector<uint256>& vInvalidTxHashes) const;
@@ -144,6 +146,8 @@ private:
     uint32_t m_myId = 0;
     MergeStatus m_mergeStatus = MERGE_STATUS_NONE;
     int m_bestChainHeight = 0;
+    uint32_t m_mergeCount = 0;
+    uint32_t m_currentMergeHeight = 0;
 
 
     std::map<uint32_t, CChain> m_chains;
