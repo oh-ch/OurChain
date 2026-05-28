@@ -25,12 +25,6 @@
 #include "config/bitcoin-config.h"
 #endif
 
-#if ENABLE_SHARDING
-// Forward declaration for TransactionInfo (defined in sharding/shard.h)
-// Note: Using forward declaration to avoid circular dependency with merge.h
-struct TransactionInfo;
-#endif
-
 /**
  * A UTXO entry.
  *
@@ -236,9 +230,6 @@ public:
 
     //! Retrieve the best block for a specific shard
     virtual uint256 GetShardBestBlock(uint32_t shardId) const;
-
-    //! Spend a coin for a specific shard
-    virtual bool SpendShardCoin(const COutPoint& outpoint);
 #endif
 
     //! Retrieve the range of blocks that may have been only partially written.
@@ -277,7 +268,6 @@ public:
 #if ENABLE_SHARDING
     void SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) override;
     uint256 GetShardBestBlock(uint32_t shardId) const override;
-    bool SpendShardCoin(const COutPoint& outpoint) override;
 #endif
     std::vector<uint256> GetHeadBlocks() const override;
     void SetBackend(CCoinsView& viewIn);
@@ -319,7 +309,6 @@ public:
 #if ENABLE_SHARDING
     void SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) override;
     uint256 GetShardBestBlock(uint32_t shardId) const override;
-    bool SpendShardCoin(const COutPoint& outpoint) override;
 #endif
     bool BatchWrite(CCoinsMap& mapCoins, CContStateMap& mapContState, const uint256& hashBlock) override;
     CCoinsViewCursor* Cursor() const override
@@ -411,9 +400,6 @@ private:
 // (pre-BIP34) cases.
 void AddCoins(CCoinsViewCache& cache, const CTransaction& tx, int nHeight, bool check = false);
 
-#if ENABLE_SHARDING
-void AddShardCoins(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check = false);
-#endif
 //! Utility function to find any unspent output with a given txid.
 // This function can be quite expensive because in the event of a transaction
 // which is not found in the cache, it can cause up to MAX_OUTPUTS_PER_BLOCK

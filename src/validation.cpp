@@ -973,6 +973,24 @@ bool GetTransaction(const uint256& hash, CTransactionRef& txOut, const Consensus
     return false;
 }
 
+#if ENABLE_SHARDING
+bool ReadTransactionFromDisk(const CDiskTxPos& pos, CTransactionRef& txOut)
+{
+    CAutoFile file(OpenBlockFile(pos, true), SER_DISK, CLIENT_VERSION);
+    if (file.IsNull())
+        return error("%s: OpenBlockFile failed", __func__);
+    CBlockHeader header;
+    try {
+        file >> header;
+        fseek(file.Get(), pos.nTxOffset, SEEK_CUR);
+        file >> txOut;
+    } catch (const std::exception& e) {
+        return error("%s: Deserialize or I/O error - %s", __func__, e.what());
+    }
+    return true;
+}
+#endif
+
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -1483,6 +1501,28 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
 
+#if ENABLE_SHARDING
+bool DisconnectTransaction(const CTransaction& tx, CTxUndo& txundo, CCoinsViewCache& view)
+{
+    const uint256 hash = tx.GetHash();
+    for (size_t o = 0; o < tx.vout.size(); o++) {
+        if (!tx.vout[o].scriptPubKey.IsUnspendable()) {
+            if (!view.SpendCoin(COutPoint(hash, o), nullptr))
+                return false;
+        }
+    }
+    if (!tx.IsCoinBase()) {
+        if (txundo.vprevout.size() != tx.vin.size())
+            return false;
+        for (unsigned int j = tx.vin.size(); j-- > 0;) {
+            if (ApplyTxInUndo(std::move(txundo.vprevout[j]), view, tx.vin[j].prevout) == DISCONNECT_FAILED)
+                return false;
+        }
+    }
+    return true;
+}
+#endif
+
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  When FAILED is returned, view is left in an indeterminate state. */
 static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
@@ -1833,10 +1873,22 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
 
         nInputs += tx.vin.size();
 
+        bool fSkipTxConnect = false;
         if (!tx.IsCoinBase()) {
+#if ENABLE_SHARDING
+            if (!view.HaveInputs(tx)) {
+                if (shardManager.IsConflictTransaction(tx)) {
+                    if (!shardManager.ResolveConflictTransaction(pindex, tx, view))
+                        fSkipTxConnect = true;
+                } else
+                    return state.DoS(100, error("ConnectBlock(): inputs missing/spent"),
+                                 REJECT_INVALID, "bad-txns-inputs-missingorspent");
+            }
+#else            
             if (!view.HaveInputs(tx))
                 return state.DoS(100, error("ConnectBlock(): inputs missing/spent"),
                                  REJECT_INVALID, "bad-txns-inputs-missingorspent");
+#endif
 
             // Check that transaction is BIP68 final
             // BIP68 lock checks (as opposed to nLockTime checks) must
@@ -1851,6 +1903,14 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
                                  REJECT_INVALID, "bad-txns-nonfinal");
             }
         }
+
+#if ENABLE_SHARDING
+        if (fSkipTxConnect) {
+            vPos.push_back(std::make_pair(tx.GetHash(), pos));
+            pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+            continue;
+        }
+#endif
 
         // GetTransactionSigOpCost counts 3 types of sigops:
         // * legacy (always)
@@ -1878,18 +1938,14 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             blockundo.vtxundo.push_back(CTxUndo());
         }
 #if ENABLE_SHARDING
-        if (shardManager.GetMergeStatus() == MERGE_STATUS_IN_PROGRESS) {
-            // Handle merge case
-            shardManager.MergeTransaction(pindex, tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back());
-        } else {
-            if (!invalidTxSet.count(tx.GetHash())) {
-                UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
-            }
+        if (!fSkipTxConnect && !invalidTxSet.count(tx.GetHash())) {
+            UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
+            if (!tx.IsCoinBase())
+                shardManager.StoreTxInfo(tx, block.GetHash(), pos, pos.nTxOffset, blockundo.vtxundo.back());
         }
 #else
         UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
 #endif
-
 
         vPos.push_back(std::make_pair(tx.GetHash(), pos));
         pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
@@ -1943,7 +1999,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     }
     view.SetShardBestBlock(pindex->nShardId, pindex->GetBlockHash());
     if (shardManager.GetMergeStatus() == MERGE_STATUS_COMPLETED) {
-        shardManager.UpdateCoins(view, pindex->nHeight);
+        shardManager.ClearMergeState();
         view.SetBestBlock(shardManager.GetpindexBestHeader(shardManager.GetMyId())->GetBlockHash());
     } else if (pindex->nShardId == shardManager.GetMyId() && shardManager.GetMergeStatus() == MERGE_STATUS_NONE) {
         view.SetBestBlock(pindex->GetBlockHash());

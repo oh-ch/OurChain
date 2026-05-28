@@ -32,9 +32,11 @@ class CChainParams;
 struct COutPoint;
 
 // Need to include coins.h for hasher types and protocol.h for MessageStartChars
+#include "chain.h"
 #include "coins.h"
 #include "primitives/transaction.h"
 #include "protocol.h"
+#include "undo.h"
 
 // Forward declaration (full definition in validation.h)
 struct CBlockIndexWorkComparator;
@@ -42,12 +44,14 @@ struct CBlockIndexWorkComparator;
 /** Transaction metadata for merge/conflict resolution */
 struct TransactionInfo {
     uint256 blockhash;
-    std::vector<CTxIn> vin;
-    std::vector<CTxOut> vout;
+    CDiskBlockPos blockPos;
+    unsigned int nTxOffset;
+    CTxUndo txundo;
 
-    TransactionInfo() = default;
-    TransactionInfo(uint256 blockhash_in, const std::vector<CTxIn>& vin_in, const std::vector<CTxOut>& vout_in)
-        : blockhash(std::move(blockhash_in)), vin(vin_in), vout(vout_in) {}
+    TransactionInfo() : nTxOffset(0) {}
+    TransactionInfo(const uint256& blockhash_in, const CDiskBlockPos& blockPos_in, unsigned int nTxOffset_in,
+                    const CTxUndo& txundo_in)
+        : blockhash(blockhash_in), blockPos(blockPos_in), nTxOffset(nTxOffset_in), txundo(txundo_in) {}
 };
 
 // Default sharding configuration values
@@ -117,9 +121,13 @@ public:
     void ExpireCrossShardRelay(int64_t nNow);
 
     // Transaction processing
-    void MergeTransaction(CBlockIndex* pindex, const CTransaction& tx,
-                          CCoinsViewCache& inputs, CTxUndo& txundo);
-    void UpdateCoins(CCoinsViewCache& inputs, int nHeight);
+    bool IsConflictTransaction(const CTransaction& tx) const;
+    /** Returns false if the incoming tx lost the conflict and was marked invalid. */
+    bool ResolveConflictTransaction(CBlockIndex* pindex, const CTransaction& tx, CCoinsViewCache& view);
+    void StoreTxInfo(const CTransaction& tx, const uint256& blockhash, const CDiskBlockPos& blockPos,
+                     unsigned int nTxOffset, const CTxUndo& txundo);
+    /** Clear merge buffers after all shards have connected (UTXO already updated in ConnectBlock). */
+    void ClearMergeState();
 
     // Merge status management
     MergeStatus GetMergeStatus() const { return m_mergeStatus; }

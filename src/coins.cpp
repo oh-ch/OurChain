@@ -8,9 +8,6 @@
 #include "memusage.h"
 #include "random.h"
 #include "script/script.h"
-#if ENABLE_SHARDING
-#include "sharding/shard.h"
-#endif
 
 #include <assert.h>
 #include <limits>
@@ -21,7 +18,6 @@ uint256 CCoinsView::GetBestBlock() const { return uint256(); }
 #if ENABLE_SHARDING
 void CCoinsView::SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) {}
 uint256 CCoinsView::GetShardBestBlock(uint32_t shardId) const { return uint256(); }
-bool CCoinsView::SpendShardCoin(const COutPoint& outpoint) { return false; }
 #endif
 std::vector<uint256> CCoinsView::GetHeadBlocks() const { return std::vector<uint256>(); }
 bool CCoinsView::BatchWrite(CCoinsMap& mapCoins, CContStateMap& mapContState, const uint256& hashBlock) { return false; }
@@ -41,7 +37,6 @@ uint256 CCoinsViewBacked::GetBestBlock() const { return base->GetBestBlock(); }
 #if ENABLE_SHARDING
 void CCoinsViewBacked::SetShardBestBlock(uint32_t shardId, const uint256& hashBlock) { base->SetShardBestBlock(shardId, hashBlock); }
 uint256 CCoinsViewBacked::GetShardBestBlock(uint32_t shardId) const { return base->GetShardBestBlock(shardId); }
-bool CCoinsViewBacked::SpendShardCoin(const COutPoint& outpoint) { return base->SpendShardCoin(outpoint); }
 #endif
 std::vector<uint256> CCoinsViewBacked::GetHeadBlocks() const { return base->GetHeadBlocks(); }
 void CCoinsViewBacked::SetBackend(CCoinsView& viewIn) { base = &viewIn; }
@@ -190,32 +185,6 @@ bool CCoinsViewCache::SpendCoin(const COutPoint& outpoint, Coin* moveout)
     }
     return true;
 }
-
-#if ENABLE_SHARDING
-bool CCoinsViewCache::SpendShardCoin(const COutPoint& outpoint)
-{
-    CCoinsMap::iterator it = FetchCoin(outpoint);
-    if (it == cacheCoins.end()) return false;
-    cachedCoinsUsage -= it->second.coin.DynamicMemoryUsage();
-    if (it->second.flags & CCoinsCacheEntry::FRESH) {
-        cacheCoins.erase(it);
-    } else {
-        it->second.flags |= CCoinsCacheEntry::DIRTY;
-        it->second.coin.Clear();
-    }
-    return true;
-}
-
-void AddShardCoins(CCoinsViewCache& cache, const uint256& txid, const TransactionInfo& transactionInfo, int nHeight, bool check)
-{
-    for (size_t i = 0; i < transactionInfo.vout.size(); ++i) {
-        bool overwrite = check ? cache.HaveCoin(COutPoint(txid, i)) : false;
-        // Always set the possible_overwrite flag to AddCoin for coinbase txn, in order to correctly
-        // deal with the pre-BIP30 occurrences of duplicate coinbase transactions.
-        cache.AddCoin(COutPoint(txid, i), Coin(transactionInfo.vout[i], nHeight, false), overwrite);
-    }
-}
-#endif
 
 static const Coin coinEmpty;
 

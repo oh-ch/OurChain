@@ -6,6 +6,7 @@
 
 #include "arith_uint256.h"
 #include "chain.h"
+#include "txdb.h"
 #include "chainparams.h"
 #include "coins.h"
 #include "hash.h"
@@ -165,57 +166,78 @@ void ShardManager::CheckMergeCompleted(uint32_t height)
     }
 }
 
-void ShardManager::MergeTransaction(CBlockIndex* pindex, const CTransaction& tx,
-                                    CCoinsViewCache& inputs, CTxUndo& txundo)
+bool ShardManager::IsConflictTransaction(const CTransaction& tx) const
 {
-    // Mark inputs spent
-    if (!tx.IsCoinBase()) {
-        txundo.vprevout.reserve(tx.vin.size());
-        for (const CTxIn& txin : tx.vin) {
-            txundo.vprevout.emplace_back();
-            txundo.vprevout.back() = inputs.AccessCoin(txin.prevout);
-            // Check if there is conflict transaction using same outpoint
-            auto it = m_mapOutpointToTxHash.find(txin.prevout);
-            if (it == m_mapOutpointToTxHash.end()) {
-                m_mapOutpointToTxHash[txin.prevout] = tx.GetHash();
-                // Only store transaction info if it doesn't already exist
-                m_mapTxInfo.try_emplace(tx.GetHash(), pindex->GetBlockHash(), tx.vin, tx.vout);
-            } else {
-                uint256 blockhashConflict = m_mapTxInfo[it->second].blockhash;
-                extern BlockMap mapBlockIndex;
-                CBlockIndex* pindexConflict = mapBlockIndex[blockhashConflict];
-                // Compare each shard's block's priority index (smaller is higher priority)
-                if (pindexConflict->nShardId >= pindex->nShardId) {
-                    pindex->vInvalidList.push_back(tx.GetHash());
-                } else {
-                    // Erase the conflict transaction from both maps
-                    std::vector<CTxIn> vinConflict = std::move(m_mapTxInfo[it->second].vin);
-                    // Erase all outpoints in vinConflict from m_mapOutpointToTxHash
-                    for (const CTxIn& conflictTxin : vinConflict) {
-                        COutPoint outpoint = conflictTxin.prevout;
-                        m_mapOutpointToTxHash.erase(outpoint);
-                    }
-                    pindexConflict->vInvalidList.push_back(it->second);
-                    m_mapTxInfo.erase(it->second);
-                    m_mapOutpointToTxHash[txin.prevout] = tx.GetHash();
-                }
-            }
+    for (const CTxIn& txin : tx.vin) {
+        auto it = m_mapOutpointToTxHash.find(txin.prevout);
+        if (it != m_mapOutpointToTxHash.end()) {
+            return true;
         }
-    } else {
-        // add outputs
-        AddCoins(inputs, tx, pindex->nHeight);
     }
+    return false;
 }
 
-void ShardManager::UpdateCoins(CCoinsViewCache& inputs, int nHeight)
+bool ShardManager::ResolveConflictTransaction(CBlockIndex* pindex, const CTransaction& tx, CCoinsViewCache& view)
 {
-    for (auto const& [outpoint, txid] : m_mapOutpointToTxHash) {
-        bool is_spent = inputs.SpendShardCoin(outpoint);
-        assert(is_spent);
+    uint256 conflictTxhash = tx.GetHash();
+    for (const CTxIn& txin : tx.vin) {
+        auto it = m_mapOutpointToTxHash.find(txin.prevout);
+        if (it != m_mapOutpointToTxHash.end()) {
+            conflictTxhash = it->second;
+            break;
+        }
     }
-    for (auto const& [txid, transactionInfo] : m_mapTxInfo) {
-        AddShardCoins(inputs, txid, transactionInfo, nHeight);
+    auto itInfo = m_mapTxInfo.find(conflictTxhash);
+    if (itInfo == m_mapTxInfo.end()) {
+        return false;
     }
+
+    extern BlockMap mapBlockIndex;
+    CBlockIndex* pindexConflict = mapBlockIndex[itInfo->second.blockhash];
+    // TODO: use PowerTimestamp for priority instead of shard id
+    const uint32_t conflictPrio = pindexConflict->nShardId;
+    if (conflictPrio >= pindex->nShardId) {
+        pindex->vInvalidList.push_back(tx.GetHash());
+        LogPrintf("Conflict transaction is from shard %u, we are shard %u, we will not resolve it\n", conflictPrio, pindex->nShardId);
+        return false;
+    }
+    LogPrintf("Conflict transaction is from shard %u, we are shard %u, we will resolve it\n", conflictPrio, pindex->nShardId);
+    
+    const CDiskTxPos postx(itInfo->second.blockPos, itInfo->second.nTxOffset);
+    CTransactionRef conflictTx;
+    if (!ReadTransactionFromDisk(postx, conflictTx)) {
+        return false;
+    }
+    CTxUndo undoCopy = itInfo->second.txundo;
+    if (!DisconnectTransaction(*conflictTx, undoCopy, view)) {
+        return false;
+    }
+
+    for (const CTxIn& txin : conflictTx->vin) {
+        m_mapOutpointToTxHash.erase(txin.prevout);
+    }
+    pindexConflict->vInvalidList.push_back(conflictTxhash);
+    m_mapTxInfo.erase(itInfo);
+
+    for (const CTxIn& txin : tx.vin) {
+        m_mapOutpointToTxHash[txin.prevout] = tx.GetHash();
+    }
+    return true;
+}
+
+void ShardManager::StoreTxInfo(const CTransaction& tx, const uint256& blockhash, const CDiskBlockPos& blockPos,
+                               unsigned int nTxOffset, const CTxUndo& txundo)
+{
+    if (tx.IsCoinBase())
+        return;
+    for (const CTxIn& txin : tx.vin) {
+        m_mapOutpointToTxHash[txin.prevout] = tx.GetHash();
+    }
+    m_mapTxInfo.try_emplace(tx.GetHash(), blockhash, blockPos, nTxOffset, txundo);
+}
+
+void ShardManager::ClearMergeState()
+{
     m_mapOutpointToTxHash.clear();
     m_mapTxInfo.clear();
 }

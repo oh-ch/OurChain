@@ -460,6 +460,13 @@ void InitScriptExecutionCache();
 bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams);
 bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams);
 
+#if ENABLE_SHARDING
+struct CDiskTxPos;
+class CTxUndo;
+bool ReadTransactionFromDisk(const CDiskTxPos& pos, CTransactionRef& txOut);
+bool DisconnectTransaction(const CTransaction& tx, CTxUndo& txundo, CCoinsViewCache& view);
+#endif
+
 /** Functions for validating blocks and updating the block tree */
 
 /** Context-independent validity checks */
