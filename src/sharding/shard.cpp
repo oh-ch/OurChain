@@ -198,10 +198,10 @@ bool ShardManager::ResolveConflictTransaction(CBlockIndex* pindex, const CTransa
     const uint32_t conflictPrio = pindexConflict->nShardId;
     if (conflictPrio >= pindex->nShardId) {
         pindex->vInvalidList.push_back(tx.GetHash());
-        LogPrintf("Conflict transaction is from shard %u, we are shard %u, we will not resolve it\n", conflictPrio, pindex->nShardId);
+        LogPrintf("Conflict transaction is from shard %u, current transaction is from shard %u, we will not resolve it\n", conflictPrio, pindex->nShardId);
         return false;
     }
-    LogPrintf("Conflict transaction is from shard %u, we are shard %u, we will resolve it\n", conflictPrio, pindex->nShardId);
+    LogPrintf("Conflict transaction is from shard %u, current transaction is from shard %u, we will resolve it\n", conflictPrio, pindex->nShardId);
     
     const CDiskTxPos postx(itInfo->second.blockPos, itInfo->second.nTxOffset);
     CTransactionRef conflictTx;

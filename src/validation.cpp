@@ -1904,14 +1904,6 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             }
         }
 
-#if ENABLE_SHARDING
-        if (fSkipTxConnect) {
-            vPos.push_back(std::make_pair(tx.GetHash(), pos));
-            pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
-            continue;
-        }
-#endif
-
         // GetTransactionSigOpCost counts 3 types of sigops:
         // * legacy (always)
         // * p2sh (when P2SH enabled in flags and excludes coinbase)
