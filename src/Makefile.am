@@ -2,12 +2,19 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-SUBDIRS = contract
 DIST_SUBDIRS = secp256k1 univalue
+if ENABLE_CONTRACT
+SUBDIRS = contract
+DIST_SUBDIRS += contract
+endif
 
-AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) $(ROCKSDB_LDFLAGS)
+AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS)
 AM_CXXFLAGS = $(HARDENED_CXXFLAGS) $(ERROR_CXXFLAGS)
-AM_CPPFLAGS = $(HARDENED_CPPFLAGS) $(ROCKSDB_CPPFLAGS)
+AM_CPPFLAGS = $(HARDENED_CPPFLAGS)
+if ENABLE_CONTRACT
+AM_LDFLAGS += $(ROCKSDB_LDFLAGS)
+AM_CPPFLAGS += $(ROCKSDB_CPPFLAGS)
+endif
 AM_CPPFLAGS += -fvisibility=hidden
 EXTRA_LIBRARIES =
 
@@ -25,7 +32,9 @@ BITCOIN_INCLUDES=-I$(builddir) -I$(builddir)/obj $(BDB_CPPFLAGS) $(BOOST_CPPFLAG
 
 BITCOIN_INCLUDES += -I$(srcdir)/secp256k1/include
 BITCOIN_INCLUDES += $(UNIVALUE_CFLAGS)
+if ENABLE_CONTRACT
 BITCOIN_INCLUDES += -I$(srcdir)/contract
+endif
 
 LIBBITCOIN_SERVER=libbitcoin_server.a
 LIBBITCOIN_COMMON=libbitcoin_common.a
@@ -36,7 +45,9 @@ LIBBITCOIN_CRYPTO=crypto/libbitcoin_crypto.a
 LIBBITCOINQT=qt/libbitcoinqt.a
 LIBGPOW=OurChain/libgpow.a
 LIBSECP256K1=secp256k1/libsecp256k1.la
+if ENABLE_CONTRACT
 LIBCONTRACTCORE=contract/libcontract_core.a
+endif
 
 if ENABLE_ZMQ
 LIBBITCOIN_ZMQ=libbitcoin_zmq.a
@@ -50,6 +61,11 @@ endif
 
 $(LIBSECP256K1): $(wildcard secp256k1/src/*) $(wildcard secp256k1/include/*)
 	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D) $(@F)
+
+if ENABLE_CONTRACT
+$(LIBCONTRACTCORE): $(wildcard contract/*.cpp) $(wildcard contract/*.h) $(wildcard contract/db/*.cpp) $(wildcard contract/db/*.h)
+	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C contract $(@F)
+endif
 
 # Make is not made aware of per-object dependencies to avoid limiting building parallelization
 # But to build the less dependent modules first, we manually select their order here:
@@ -83,7 +99,9 @@ bin_SCRIPTS =
 dist_bin_SCRIPTS =
 include_HEADERS =
 
+if ENABLE_CONTRACT
 dist_bin_SCRIPTS += contract/ourcontract-mkdll
+endif
 # bin_PROGRAMS += ourcontract-rt
 
 .PHONY: FORCE check-symbols check-security
@@ -109,10 +127,6 @@ BITCOIN_CORE_H = \
   compressor.h \
   consensus/consensus.h \
   consensus/tx_verify.h \
-  contract/processing.h \
-  contract/contractdb.h \
-  contract/dbWrapper.h \
-  contract/updatepolicy.h \
   core_io.h \
   core_memusage.h \
   cuckoocache.h \
@@ -189,6 +203,13 @@ BITCOIN_CORE_H = \
   zmq/zmqconfig.h\
   zmq/zmqnotificationinterface.h \
   zmq/zmqpublishnotifier.h
+if ENABLE_CONTRACT
+BITCOIN_CORE_H += \
+  contract/processing.h \
+  contract/contractdb.h \
+  contract/dbWrapper.h \
+  contract/updatepolicy.h
+endif
 
 
 obj/build.h: FORCE
@@ -403,12 +424,11 @@ bitcoind_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 bitcoind_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
 bitcoind_LDFLAGS += -Wl,--export-dynamic
 
-contract_api_sources = \
-    contract/lib/libourcontract.cpp
-
-bitcoind_SOURCES = \
-  bitcoind.cpp \
-  $(contract_api_sources)
+bitcoind_SOURCES = bitcoind.cpp
+if ENABLE_CONTRACT
+contract_api_sources = contract/lib/libourcontract.cpp
+bitcoind_SOURCES += $(contract_api_sources)
+endif
 
 if TARGET_WINDOWS
 bitcoind_SOURCES += bitcoind-res.rc
@@ -427,8 +447,10 @@ bitcoind_LDADD = \
     $(LIBLEVELDB) \
     $(LIBLEVELDB_SSE42) \
     $(LIBMEMENV) \
-    $(LIBSECP256K1) \
-    $(LIBCONTRACTCORE)
+    $(LIBSECP256K1)
+if ENABLE_CONTRACT
+bitcoind_LDADD += $(LIBCONTRACTCORE)
+endif
 
 bitcoind_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS)
 

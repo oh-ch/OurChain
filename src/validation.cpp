@@ -14,7 +14,9 @@
 #include "consensus/merkle.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
+#if ENABLE_CONTRACT
 #include "contract/db/contractdb.h"
+#endif
 #include "cuckoocache.h"
 #include "fs.h"
 #include "hash.h"
@@ -2815,10 +2817,12 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
                 GetMainSignals().BlockConnected(trace.pblock, trace.pindex, *trace.conflictedTxs);
             }
 
+#if ENABLE_CONTRACT
             ContractDB& contractcache = ContractDB::getInstance();
             if (!contractcache.syncToChain(chainActive, chainparams.GetConsensus())) {
                 return false;
             }
+#endif
         }
         // When we reach this point, we switched to a new tip (stored in pindexNewTip).
 
