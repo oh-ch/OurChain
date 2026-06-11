@@ -16,7 +16,9 @@
 #include "checkpoints.h"
 #include "compat/sanity.h"
 #include "consensus/validation.h"
+#if ENABLE_CONTRACT
 #include "contract/contractserver.h"
+#endif
 #include "fs.h"
 #include "httprpc.h"
 #include "httpserver.h"
@@ -171,7 +173,9 @@ void Interrupt(boost::thread_group& threadGroup)
     InterruptTorControl();
     if (g_connman)
         g_connman->Interrupt();
+#if ENABLE_CONTRACT
     ContractServer::getInstance().interrupt();
+#endif
     threadGroup.interrupt_all();
 }
 
@@ -204,7 +208,9 @@ void Shutdown()
     peerLogic.reset();
     g_connman.reset();
 
+#if ENABLE_CONTRACT
     ContractServer::getInstance().shutdown();
+#endif
 
     StopTorControl();
     UnregisterNodeSignals(GetNodeSignals());
@@ -1638,6 +1644,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // ********************************************************* Step 11: start node
 
+#if ENABLE_CONTRACT
     LogPrintf("Starting Contract Execution Server...\n");
     try {
         ContractServer::getInstance().start(threadGroup);
@@ -1645,6 +1652,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     } catch (const std::exception& e) {
         return InitError(strprintf("Failed to start Contract Server: %s\n", e.what()));
     }
+#endif
 
     //// debug print
     LogPrintf("mapBlockIndex.size() = %u\n", mapBlockIndex.size());

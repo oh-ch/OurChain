@@ -110,6 +110,13 @@ AC_ARG_ENABLE([gpow],
   [enable_gpow=$enableval],
   [enable_gpow=no])
 
+dnl Enable smart contract execution
+AC_ARG_ENABLE([contract],
+  [AS_HELP_STRING([--disable-contract],
+  [disable smart contract execution (enabled by default)])],
+  [enable_contract=$enableval],
+  [enable_contract=yes])
+
 AC_ARG_WITH([miniupnpc],
   [AS_HELP_STRING([--with-miniupnpc],
   [enable UPNP (default is yes if libminiupnpc is found)])],
@@ -1096,6 +1103,16 @@ else
   AC_DEFINE_UNQUOTED([ENABLE_GPoW],[0],[Define to 0 to disable GPoW functions])
 fi
 
+dnl enable contract execution
+AC_MSG_CHECKING([if contract execution should be enabled])
+if test x$enable_contract != xno; then
+  AC_MSG_RESULT(yes)
+  AC_DEFINE_UNQUOTED([ENABLE_CONTRACT],[1],[Define to 1 to enable contract execution])
+else
+  AC_MSG_RESULT(no)
+  AC_DEFINE_UNQUOTED([ENABLE_CONTRACT],[0],[Define to 0 to disable contract execution])
+fi
+
 dnl enable upnp support
 AC_MSG_CHECKING([whether to build with support for UPnP])
 if test x$have_miniupnpc = xno; then
@@ -1190,6 +1207,7 @@ AM_CONDITIONAL([BUILD_DARWIN], [test x$BUILD_OS = xdarwin])
 AM_CONDITIONAL([TARGET_WINDOWS], [test x$TARGET_OS = xwindows])
 AM_CONDITIONAL([ENABLE_WALLET],[test x$enable_wallet = xyes])
 AM_CONDITIONAL([ENABLE_GPoW],[test x$enable_gpow = xyes])
+AM_CONDITIONAL([ENABLE_CONTRACT],[test x$enable_contract != xno])
 AM_CONDITIONAL([ENABLE_TESTS],[test x$BUILD_TEST = xyes])
 AM_CONDITIONAL([ENABLE_QT],[test x$bitcoin_enable_qt = xyes])
 AM_CONDITIONAL([ENABLE_QT_TESTS],[test x$BUILD_TEST_QT = xyes])
@@ -1225,9 +1243,14 @@ AC_SUBST(BITCOIN_GUI_NAME)
 AC_SUBST(BITCOIN_CLI_NAME)
 AC_SUBST(BITCOIN_TX_NAME)
 
-# Contract
-ROCKSDB_CPPFLAGS="$CPPFLAGS -I/usr/local/include"
-ROCKSDB_LDFLAGS="$LDFLAGS -L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
+# Contract (RocksDB only needed when contract execution is enabled)
+if test x$enable_contract != xno; then
+  ROCKSDB_CPPFLAGS="$CPPFLAGS -I/usr/local/include"
+  ROCKSDB_LDFLAGS="$LDFLAGS -L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
+else
+  ROCKSDB_CPPFLAGS=
+  ROCKSDB_LDFLAGS=
+fi
 AC_SUBST(ROCKSDB_CPPFLAGS)
 AC_SUBST(ROCKSDB_LDFLAGS)
 
@@ -1322,6 +1345,7 @@ echo
 echo "Options used to compile and link:"
 echo "  with wallet   = $enable_wallet"
 echo "  with GPoW     = $enable_gpow"
+echo "  with contract = $enable_contract"
 echo "  with gui / qt = $bitcoin_enable_qt"
 if test x$bitcoin_enable_qt != xno; then
     echo "    qt version  = $bitcoin_qt_got_major_vers"

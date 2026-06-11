@@ -1,5 +1,6 @@
 *.tar.gz
 src/ourcontract-rt
+src/contract/ourcontract-mkdll
 .vscode/
 
 .idea/

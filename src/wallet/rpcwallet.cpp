@@ -7,7 +7,6 @@
 #include "base58.h"
 #include "chain.h"
 #include "consensus/validation.h"
-#include "contract/updatepolicy.h"
 #include "core_io.h"
 #include "httpserver.h"
 #include "init.h"
@@ -3129,6 +3128,7 @@ UniValue generate(const JSONRPCRequest& request)
 #endif
 }
 
+#if ENABLE_CONTRACT
 static void SendContractTx(CWallet* const pwallet, const Contract* contract, const CTxDestination& address, CWalletTx& wtxNew, const CCoinControl& coin_control)
 {
     if (pwallet->GetBroadcastTransactions() && !g_connman)
@@ -3314,6 +3314,7 @@ UniValue callcontract(const JSONRPCRequest& request)
 
     return wtx.GetHash().GetHex();
 }
+#endif // ENABLE_CONTRACT
 
 /*
 UniValue dumpcontractmessage(const JSONRPCRequest& request)
@@ -3421,9 +3422,11 @@ static const CRPCCommand commands[] =
         {"wallet", "walletpassphrasechange", &walletpassphrasechange, true, {"oldpassphrase", "newpassphrase"}},
         {"wallet", "walletpassphrase", &walletpassphrase, true, {"passphrase", "timeout"}},
         {"wallet", "removeprunedfunds", &removeprunedfunds, true, {"txid"}},
+#if ENABLE_CONTRACT
         {"wallet", "deploycontract", &deploycontract, false, {"filename", "initializer"}},
         {"wallet", "callcontract", &callcontract, false, {"txid", "function"}},
         //{"wallet", "dumpcontractmessage", &dumpcontractmessage, true, {"txid", "function"}},
+#endif
 
         {"generating", "generate", &generate, true, {"nblocks", "maxtries"}},
 };
