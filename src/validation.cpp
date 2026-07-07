@@ -2384,6 +2384,15 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
 #if ENABLE_SHARDING
     ShardManager& shardManager = ShardManager::GetInstance();
     assert(pindexNew->pprev == shardManager.GetChain(pindexNew->nShardId).Tip());
+    LogPrintf("ConnectTip begin: shard=%u height=%d hash=%s prev=%s merge_status=%d current_merge_height=%u best_chain_height=%d my_shard=%u\n",
+              pindexNew->nShardId,
+              pindexNew->nHeight,
+              pindexNew->GetBlockHash().ToString(),
+              pindexNew->pprev ? pindexNew->pprev->GetBlockHash().ToString() : "null",
+              shardManager.GetMergeStatus(),
+              shardManager.GetCurrentMergeHeight(),
+              shardManager.GetBestChainHeight(),
+              shardManager.GetMyId());
     shardManager.SetMergeStatus(MERGE_STATUS_NONE);
     LogPrintf("Shard %d: indexNew->nHeight: %d, bestShardHeader->nHeight: %d, bestChainHeight: %d\n", pindexNew->nShardId, pindexNew->nHeight, shardManager.GetpindexBestHeader(pindexNew->nShardId)->nHeight, shardManager.GetBestChainHeight());
     if (pindexNew->nHeight > 0) {
@@ -2778,10 +2787,27 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
             CBlockIndex* pindexOldTip = shardManager.GetChain(shardId).Tip();
             if (pindexMostWork == nullptr) {
                 pindexMostWork = FindMostWorkChain(shardId);
+                LogPrintf("ActivateBestChain select: shard=%u old_tip_h=%d old_tip_hash=%s selected_h=%d selected_hash=%s from_pblock=%d pblock_shard=%u pblock_hash=%s\n",
+                          shardId,
+                          pindexOldTip ? pindexOldTip->nHeight : -1,
+                          pindexOldTip ? pindexOldTip->GetBlockHash().ToString() : "null",
+                          pindexMostWork ? pindexMostWork->nHeight : -1,
+                          pindexMostWork ? pindexMostWork->GetBlockHash().ToString() : "null",
+                          pblock ? 1 : 0,
+                          pblock ? pblock->nShardId : 0,
+                          pblock ? pblock->GetHash().ToString() : "null");
             }
 
-            if (pindexMostWork == nullptr || pindexMostWork == shardManager.GetChain(shardId).Tip())
+            if (pindexMostWork == nullptr || pindexMostWork == shardManager.GetChain(shardId).Tip()) {
+                CBlockIndex* tip = shardManager.GetChain(shardId).Tip();
+                LogPrintf("ActivateBestChain early-return: shard=%u tip_h=%d tip_hash=%s selected_h=%d selected_hash=%s\n",
+                          shardId,
+                          tip ? tip->nHeight : -1,
+                          tip ? tip->GetBlockHash().ToString() : "null",
+                          pindexMostWork ? pindexMostWork->nHeight : -1,
+                          pindexMostWork ? pindexMostWork->GetBlockHash().ToString() : "null");
                 return true;
+            }
 #else
             CBlockIndex* pindexOldTip = chainActive.Tip();
             if (pindexMostWork == nullptr) {
@@ -3558,13 +3584,77 @@ static bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidation
 
     // TODO: deal better with return value and error conditions for duplicate
     // and unrequested blocks.
-    if (fAlreadyHave) return true;
+    if (fAlreadyHave) {
+#if ENABLE_SHARDING
+        LogPrintf("AcceptBlock skip: already-have hash=%s shard=%u height=%d requested=%d\n",
+                  block.GetHash().ToString(), pindex->nShardId, pindex->nHeight, fRequested ? 1 : 0);
+#else
+        LogPrintf("AcceptBlock skip: already-have hash=%s height=%d requested=%d\n",
+                  block.GetHash().ToString(), pindex->nHeight, fRequested ? 1 : 0);
+#endif
+        return true;
+    }
     if (!fRequested) {                     // If we didn't ask for it:
-        if (pindex->nTx != 0) return true; // This is a previously-processed block that was pruned
-        if (!fHasMoreWork) return true;    // Don't process less-work chains
-        if (fTooFarAhead) return true;     // Block height is too high
+        if (pindex->nTx != 0) { // This is a previously-processed block that was pruned
+#if ENABLE_SHARDING
+            LogPrintf("AcceptBlock skip: unrequested-pruned hash=%s shard=%u height=%d nTx=%u\n",
+                      block.GetHash().ToString(), pindex->nShardId, pindex->nHeight, pindex->nTx);
+#else
+            LogPrintf("AcceptBlock skip: unrequested-pruned hash=%s height=%d nTx=%u\n",
+                      block.GetHash().ToString(), pindex->nHeight, pindex->nTx);
+#endif
+            return true;
+        }
+        if (!fHasMoreWork) {    // Don't process less-work chains
+#if ENABLE_SHARDING
+            LogPrintf("AcceptBlock skip: unrequested-less-work hash=%s shard=%u height=%d work=%s tip_work=%s\n",
+                      block.GetHash().ToString(),
+                      pindex->nShardId,
+                      pindex->nHeight,
+                      pindex->nChainWork.GetHex(),
+                      shardChain.Tip() ? shardChain.Tip()->nChainWork.GetHex() : "null");
+#else
+            LogPrintf("AcceptBlock skip: unrequested-less-work hash=%s height=%d work=%s tip_work=%s\n",
+                      block.GetHash().ToString(),
+                      pindex->nHeight,
+                      pindex->nChainWork.GetHex(),
+                      chainActive.Tip() ? chainActive.Tip()->nChainWork.GetHex() : "null");
+#endif
+            return true;
+        }
+        if (fTooFarAhead) {     // Block height is too high
+#if ENABLE_SHARDING
+            LogPrintf("AcceptBlock skip: unrequested-too-far-ahead hash=%s shard=%u height=%d tip_height=%d\n",
+                      block.GetHash().ToString(),
+                      pindex->nShardId,
+                      pindex->nHeight,
+                      shardChain.Tip() ? shardChain.Tip()->nHeight : -1);
+#else
+            LogPrintf("AcceptBlock skip: unrequested-too-far-ahead hash=%s height=%d tip_height=%d\n",
+                      block.GetHash().ToString(),
+                      pindex->nHeight,
+                      chainActive.Tip() ? chainActive.Tip()->nHeight : -1);
+#endif
+            return true;
+        }
     }
     if (fNewBlock) *fNewBlock = true;
+#if ENABLE_SHARDING
+    LogPrintf("AcceptBlock proceed: hash=%s shard=%u height=%d requested=%d has_more_work=%d too_far_ahead=%d\n",
+              block.GetHash().ToString(),
+              pindex->nShardId,
+              pindex->nHeight,
+              fRequested ? 1 : 0,
+              fHasMoreWork ? 1 : 0,
+              fTooFarAhead ? 1 : 0);
+#else
+    LogPrintf("AcceptBlock proceed: hash=%s height=%d requested=%d has_more_work=%d too_far_ahead=%d\n",
+              block.GetHash().ToString(),
+              pindex->nHeight,
+              fRequested ? 1 : 0,
+              fHasMoreWork ? 1 : 0,
+              fTooFarAhead ? 1 : 0);
+#endif
 
     if (!CheckBlock(block, state, chainparams.GetConsensus()) ||
         !ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindex->pprev)) {

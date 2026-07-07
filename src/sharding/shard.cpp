@@ -160,6 +160,8 @@ void ShardManager::CheckMergeCompleted(uint32_t height)
         m_mergeCount = 0;
     }
     m_mergeCount++;
+    LogPrintf("Merge check: height=%d merge_count=%d total_shards=%d status=%d\n",
+              height, m_mergeCount, m_totalCount, m_mergeStatus);
     if (m_mergeCount == m_totalCount) {
         m_mergeStatus = MERGE_STATUS_COMPLETED;
         LogPrintf("Merge completed at height %d\n", height);
