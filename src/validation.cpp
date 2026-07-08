@@ -1989,14 +1989,21 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             // add this block to the view's block chain
 #if ENABLE_SHARDING
     if (shardManager.GetMergeStatus() == MERGE_STATUS_IN_PROGRESS) {
-        shardManager.CheckMergeCompleted(pindex->nHeight);
+        shardManager.CheckMergeCompleted(pindex->nHeight, pindex->nShardId);
     }
     view.SetShardBestBlock(pindex->nShardId, pindex->GetBlockHash());
     if (shardManager.GetMergeStatus() == MERGE_STATUS_COMPLETED) {
         shardManager.ClearMergeState();
-        view.SetBestBlock(shardManager.GetpindexBestHeader(shardManager.GetMyId())->GetBlockHash());
+        CBlockIndex* myBestHeader = shardManager.GetpindexBestHeader(shardManager.GetMyId());
+        assert(myBestHeader != nullptr); // seeded at genesis / LoadChainTip
+        view.SetBestBlock(myBestHeader->GetBlockHash());
     } else if (pindex->nShardId == shardManager.GetMyId() && shardManager.GetMergeStatus() == MERGE_STATUS_NONE) {
         view.SetBestBlock(pindex->GetBlockHash());
+    }
+    // Track our own shard's tip so the miner's WaitForMerge() knows when the
+    // merge frontier has caught up to a block we produced.
+    if (pindex->nShardId == shardManager.GetMyId()) {
+        shardManager.OnOwnBlockConnected(pindex->nHeight);
     }
 #else
     view.SetBestBlock(pindex->GetBlockHash());
@@ -2153,10 +2160,6 @@ static void DoWarning(const std::string& strWarning)
     }
 }
 
-#if ENABLE_SHARDING
-CSemaphore sem_MergeShard(1);
-#endif
-
 /** Update chainActive and related internal data structures. */
 void static UpdateTip(CBlockIndex* pindexNew, const CChainParams& chainParams)
 {
@@ -2172,10 +2175,9 @@ void static UpdateTip(CBlockIndex* pindexNew, const CChainParams& chainParams)
         MergeStatus mergeStatus = shardManager.GetMergeStatus();
         if (!(mergeStatus == MERGE_STATUS_COMPLETED || (pindexNew->nShardId == shardManager.GetMyId() && mergeStatus == MERGE_STATUS_NONE)))
             return;
-        chainActive.SetTip(shardManager.GetpindexBestHeader(shardManager.GetMyId()));
-        if (mergeStatus == MERGE_STATUS_COMPLETED) {
-            sem_MergeShard.post();
-        }
+        CBlockIndex* myBestHeader = shardManager.GetpindexBestHeader(shardManager.GetMyId());
+        assert(myBestHeader != nullptr); // seeded at genesis / LoadChainTip
+        chainActive.SetTip(myBestHeader);
     }
 #else
     chainActive.SetTip(pindexNew);
@@ -2384,6 +2386,8 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
 #if ENABLE_SHARDING
     ShardManager& shardManager = ShardManager::GetInstance();
     assert(pindexNew->pprev == shardManager.GetChain(pindexNew->nShardId).Tip());
+    CBlockIndex* bestShardHeader = shardManager.GetpindexBestHeader(pindexNew->nShardId);
+    const int bestShardHeaderHeight = bestShardHeader ? bestShardHeader->nHeight : -1;
     LogPrintf("ConnectTip begin: shard=%u height=%d hash=%s prev=%s merge_status=%d current_merge_height=%u best_chain_height=%d my_shard=%u\n",
               pindexNew->nShardId,
               pindexNew->nHeight,
@@ -2394,7 +2398,8 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
               shardManager.GetBestChainHeight(),
               shardManager.GetMyId());
     shardManager.SetMergeStatus(MERGE_STATUS_NONE);
-    LogPrintf("Shard %d: indexNew->nHeight: %d, bestShardHeader->nHeight: %d, bestChainHeight: %d\n", pindexNew->nShardId, pindexNew->nHeight, shardManager.GetpindexBestHeader(pindexNew->nShardId)->nHeight, shardManager.GetBestChainHeight());
+    LogPrintf("Shard %d: indexNew->nHeight: %d, bestShardHeader->nHeight: %d, bestChainHeight: %d\n",
+              pindexNew->nShardId, pindexNew->nHeight, bestShardHeaderHeight, shardManager.GetBestChainHeight());
     if (pindexNew->nHeight > 0) {
         if (pindexNew->nHeight == shardManager.GetBestChainHeight() ||
             (pindexNew->nHeight == shardManager.GetBestChainHeight() - 1 &&
@@ -2584,8 +2589,20 @@ static CBlockIndex* FindMostWorkChain()
             pindexTest = pindexTest->pprev;
         }
 #endif
-        if (!fInvalidAncestor)
+        if (!fInvalidAncestor) {
+#if ENABLE_SHARDING
+            // Merge frontier barrier: never connect blocks above lastMerged+1.
+            // Higher blocks stay in the candidate set until the frontier advances.
+            ShardManager& shardManager = ShardManager::GetInstance();
+            const int mergeFrontierCap = shardManager.GetLastMergedHeight() + 1;
+            if (pindexNew->nHeight > mergeFrontierCap) {
+                CBlockIndex* pindexCapped = pindexNew->GetAncestor(mergeFrontierCap);
+                if (pindexCapped)
+                    return pindexCapped;
+            }
+#endif
             return pindexNew;
+        }
     } while (true);
 }
 
@@ -2765,13 +2782,123 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
     // far from a guarantee. Things in the P2P/RPC will often end up calling
     // us in the middle of ProcessNewBlock - do not assume pblock is set
     // sanely for performance or correctness!
+    int nStopAtHeight = gArgs.GetArg("-stopatheight", DEFAULT_STOPATHEIGHT);
+#if ENABLE_SHARDING
+    ShardManager& shardManager = ShardManager::GetInstance();
+    bool fContinue = true;
+    while (fContinue) {
+        boost::this_thread::interruption_point();
+        if (ShutdownRequested())
+            break;
+
+        bool fAnyConnect = false;
+        std::map<uint32_t, CBlockIndex*> mapOldTips;
+
+        {
+            LOCK(cs_main);
+            ConnectTrace connectTrace(mempool); // Destructed before cs_main is unlocked
+
+            for (uint32_t shardId = 0; shardId < shardManager.GetTotalCount(); ++shardId) {
+                mapOldTips[shardId] = shardManager.GetChain(shardId).Tip();
+            }
+
+            // Drain all shards toward the merge-frontier cap. After one shard
+            // completes a merge, lastMerged advances so other shards blocked at
+            // H+1 can connect on the next pass without waiting for another event.
+            bool fDrainProgress = true;
+            while (fDrainProgress) {
+                fDrainProgress = false;
+                const uint32_t triggerShard = pblock ? pblock->nShardId : shardManager.GetMyId();
+                std::vector<uint32_t> shardOrder;
+                shardOrder.push_back(triggerShard);
+                for (uint32_t sid = 0; sid < shardManager.GetTotalCount(); ++sid) {
+                    if (sid != triggerShard)
+                        shardOrder.push_back(sid);
+                }
+                for (uint32_t shardId : shardOrder) {
+                    CBlockIndex* pindexOldTip = shardManager.GetChain(shardId).Tip();
+                    CBlockIndex* pindexWork = FindMostWorkChain(shardId);
+                    if (pindexWork == nullptr || pindexWork == pindexOldTip)
+                        continue;
+
+                    LogPrintf("ActivateBestChain select: shard=%u old_tip_h=%d old_tip_hash=%s selected_h=%d selected_hash=%s from_pblock=%d pblock_shard=%u pblock_hash=%s\n",
+                              shardId,
+                              pindexOldTip ? pindexOldTip->nHeight : -1,
+                              pindexOldTip ? pindexOldTip->GetBlockHash().ToString() : "null",
+                              pindexWork->nHeight,
+                              pindexWork->GetBlockHash().ToString(),
+                              pblock ? 1 : 0,
+                              pblock ? pblock->nShardId : 0,
+                              pblock ? pblock->GetHash().ToString() : "null");
+
+                    bool fInvalidFound = false;
+                    std::shared_ptr<const CBlock> nullBlockPtr;
+                    std::shared_ptr<const CBlock> blockForStep = nullBlockPtr;
+                    if (pblock && pblock->nShardId == shardId && pblock->GetHash() == pindexWork->GetBlockHash())
+                        blockForStep = pblock;
+
+                    if (!ActivateBestChainStep(state, chainparams, pindexWork, blockForStep, fInvalidFound, connectTrace))
+                        return false;
+
+                    fDrainProgress = true;
+                    fAnyConnect = true;
+                }
+            }
+
+            for (const PerBlockConnectTrace& trace : connectTrace.GetBlocksConnected()) {
+                assert(trace.pblock && trace.pindex);
+                GetMainSignals().BlockConnected(trace.pblock, trace.pindex, *trace.conflictedTxs);
+            }
+
+#if ENABLE_CONTRACT
+            ContractDB& contractcache = ContractDB::getInstance();
+            if (!contractcache.syncToChain(chainActive, chainparams.GetConsensus())) {
+                return false;
+            }
+#endif
+        }
+
+        fContinue = false;
+        {
+            LOCK(cs_main);
+            for (uint32_t shardId = 0; shardId < shardManager.GetTotalCount(); ++shardId) {
+                CBlockIndex* pindexWork = FindMostWorkChain(shardId);
+                CBlockIndex* pindexTip = shardManager.GetChain(shardId).Tip();
+                if (pindexWork != nullptr && pindexWork != pindexTip) {
+                    fContinue = true;
+                    break;
+                }
+            }
+        }
+
+        if (!fAnyConnect && !fContinue)
+            break;
+
+        for (uint32_t shardId = 0; shardId < shardManager.GetTotalCount(); ++shardId) {
+            CBlockIndex* pindexOldTip = mapOldTips[shardId];
+            CBlockIndex* pindexNewTip = nullptr;
+            const CBlockIndex* pindexFork = nullptr;
+            {
+                LOCK(cs_main);
+                pindexNewTip = shardManager.GetChain(shardId).Tip();
+                if (pindexNewTip == pindexOldTip)
+                    continue;
+                pindexFork = shardManager.GetChain(shardId).FindFork(pindexOldTip);
+            }
+            bool fInitialDownload = IsInitialBlockDownload(shardId);
+            GetMainSignals().UpdatedBlockTip(pindexNewTip, pindexFork, fInitialDownload);
+            if (pindexNewTip->nHeight == 0 || pindexNewTip->nShardId == shardManager.GetMyId()) {
+                if (pindexFork != pindexNewTip)
+                    uiInterface.NotifyBlockTip(fInitialDownload, pindexNewTip);
+            }
+            if (nStopAtHeight && pindexNewTip && pindexNewTip->nHeight >= nStopAtHeight)
+                StartShutdown();
+        }
+    }
+#else
     CBlockIndex* pindexMostWork = nullptr;
     CBlockIndex* pindexNewTip = nullptr;
-    int nStopAtHeight = gArgs.GetArg("-stopatheight", DEFAULT_STOPATHEIGHT);
     do {
-#if ENABLE_SHARDING
-        ShardManager& shardManager = ShardManager::GetInstance();
-#endif
         boost::this_thread::interruption_point();
         if (ShutdownRequested())
             break;
@@ -2782,33 +2909,6 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
             LOCK(cs_main);
             ConnectTrace connectTrace(mempool); // Destructed before cs_main is unlocked
 
-#if ENABLE_SHARDING
-            uint32_t shardId = pblock ? pblock->nShardId : shardManager.GetMyId();
-            CBlockIndex* pindexOldTip = shardManager.GetChain(shardId).Tip();
-            if (pindexMostWork == nullptr) {
-                pindexMostWork = FindMostWorkChain(shardId);
-                LogPrintf("ActivateBestChain select: shard=%u old_tip_h=%d old_tip_hash=%s selected_h=%d selected_hash=%s from_pblock=%d pblock_shard=%u pblock_hash=%s\n",
-                          shardId,
-                          pindexOldTip ? pindexOldTip->nHeight : -1,
-                          pindexOldTip ? pindexOldTip->GetBlockHash().ToString() : "null",
-                          pindexMostWork ? pindexMostWork->nHeight : -1,
-                          pindexMostWork ? pindexMostWork->GetBlockHash().ToString() : "null",
-                          pblock ? 1 : 0,
-                          pblock ? pblock->nShardId : 0,
-                          pblock ? pblock->GetHash().ToString() : "null");
-            }
-
-            if (pindexMostWork == nullptr || pindexMostWork == shardManager.GetChain(shardId).Tip()) {
-                CBlockIndex* tip = shardManager.GetChain(shardId).Tip();
-                LogPrintf("ActivateBestChain early-return: shard=%u tip_h=%d tip_hash=%s selected_h=%d selected_hash=%s\n",
-                          shardId,
-                          tip ? tip->nHeight : -1,
-                          tip ? tip->GetBlockHash().ToString() : "null",
-                          pindexMostWork ? pindexMostWork->nHeight : -1,
-                          pindexMostWork ? pindexMostWork->GetBlockHash().ToString() : "null");
-                return true;
-            }
-#else
             CBlockIndex* pindexOldTip = chainActive.Tip();
             if (pindexMostWork == nullptr) {
                 pindexMostWork = FindMostWorkChain();
@@ -2817,7 +2917,6 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
             // Whether we have anything to do at all.
             if (pindexMostWork == nullptr || pindexMostWork == chainActive.Tip())
                 return true;
-#endif
 
             bool fInvalidFound = false;
             std::shared_ptr<const CBlock> nullBlockPtr;
@@ -2828,15 +2927,9 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
                 // Wipe cache, we may need another branch now.
                 pindexMostWork = nullptr;
             }
-#if ENABLE_SHARDING
-            pindexNewTip = shardManager.GetChain(shardId).Tip();
-            pindexFork = shardManager.GetChain(shardId).FindFork(pindexOldTip);
-            fInitialDownload = IsInitialBlockDownload(shardId);
-#else
             pindexNewTip = chainActive.Tip();
             pindexFork = chainActive.FindFork(pindexOldTip);
             fInitialDownload = IsInitialBlockDownload();
-#endif
 
             for (const PerBlockConnectTrace& trace : connectTrace.GetBlocksConnected()) {
                 assert(trace.pblock && trace.pindex);
@@ -2854,18 +2947,6 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
 
         // Notifications/callbacks that can run without cs_main
 
-#if ENABLE_SHARDING
-        // Notify external listeners about the new tip.
-        GetMainSignals().UpdatedBlockTip(pindexNewTip, pindexFork, fInitialDownload);
-        if (pindexNewTip->nHeight == 0 || pindexNewTip->nShardId == shardManager.GetMyId()) {
-            // Always notify the UI if a new block tip was connected
-            if (pindexFork != pindexNewTip) {
-                uiInterface.NotifyBlockTip(fInitialDownload, pindexNewTip);
-            }
-        }
-
-        if (nStopAtHeight && pindexNewTip && pindexNewTip->nHeight >= nStopAtHeight) StartShutdown();
-#else
         // Notify external listeners about the new tip.
         GetMainSignals().UpdatedBlockTip(pindexNewTip, pindexFork, fInitialDownload);
 
@@ -2875,8 +2956,8 @@ bool ActivateBestChain(CValidationState& state, const CChainParams& chainparams,
         }
 
         if (nStopAtHeight && pindexNewTip && pindexNewTip->nHeight >= nStopAtHeight) StartShutdown();
-#endif
     } while (pindexNewTip != pindexMostWork);
+#endif
     CheckBlockIndex(chainparams.GetConsensus());
 
     // Write changes periodically to disk, after relay.
@@ -4112,6 +4193,11 @@ bool LoadChainTip(const CChainParams& chainparams)
 {
 #if ENABLE_SHARDING
     ShardManager& shardManager = ShardManager::GetInstance();
+    BlockMap::iterator itGenesis = mapBlockIndex.find(chainparams.GetConsensus().hashGenesisBlock);
+    if (itGenesis == mapBlockIndex.end())
+        return error("%s: genesis block missing from mapBlockIndex", __func__);
+    CBlockIndex* pGenesis = itGenesis->second;
+
     // Early exit: all shards already match their stored tips
     bool allShardsMatch = true;
     for (uint32_t i = 0; i < shardManager.GetTotalCount(); i++) {
@@ -4122,8 +4208,13 @@ bool LoadChainTip(const CChainParams& chainparams)
             break;
         }
     }
-    if (allShardsMatch)
+    if (allShardsMatch) {
+        // Still enforce the best-header invariant (e.g. after restart when tips
+        // were restored by LoadBlockIndex but m_bestHeaders was not fully seeded).
+        shardManager.EnsureBestHeadersSeeded(pGenesis);
+        shardManager.AssertBestHeadersSeeded();
         return true;
+    }
 
     if (pcoinsTip->GetBestBlock().IsNull() && mapBlockIndex.size() == 1) {
         // In case we just added the genesis block, connect it now, so
@@ -4138,8 +4229,13 @@ bool LoadChainTip(const CChainParams& chainparams)
     // Load each shard's best chain from disk
     for (uint32_t shardId = 0; shardId < shardManager.GetTotalCount(); shardId++) {
         uint256 hashShardTip = pcoinsTip->GetShardBestBlock(shardId);
-        if (hashShardTip.IsNull())
-            continue; // No blocks for this shard yet
+        if (hashShardTip.IsNull()) {
+            // No tip yet for this shard: pin the shared genesis as chain tip so
+            // GetChain(shardId).Tip() and best header agree with the invariant.
+            if (shardManager.GetChain(shardId).Tip() == nullptr)
+                shardManager.GetChain(shardId).SetTip(pGenesis);
+            continue;
+        }
         BlockMap::iterator it = mapBlockIndex.find(hashShardTip);
         if (it == mapBlockIndex.end())
             return false;
@@ -4147,6 +4243,9 @@ bool LoadChainTip(const CChainParams& chainparams)
         PruneBlockIndexCandidates(shardId);
     }
     chainActive.SetTip(shardManager.GetChain(shardManager.GetMyId()).Tip());
+
+    shardManager.EnsureBestHeadersSeeded(pGenesis);
+    shardManager.AssertBestHeadersSeeded();
 #else
     if (chainActive.Tip() && chainActive.Tip()->GetBlockHash() == pcoinsTip->GetBestBlock())
         return true;
@@ -4622,8 +4721,15 @@ bool LoadGenesisBlock(const CChainParams& chainparams)
     // mapBlockIndex. Note that we can't use chainActive here, since it is
     // set based on the coins db, not the block index db, which is the only
     // thing loaded at this point.
-    if (mapBlockIndex.count(chainparams.GenesisBlock().GetHash()))
+    if (mapBlockIndex.count(chainparams.GenesisBlock().GetHash())) {
+#if ENABLE_SHARDING
+        BlockMap::iterator itGenesis = mapBlockIndex.find(chainparams.GetConsensus().hashGenesisBlock);
+        assert(itGenesis != mapBlockIndex.end());
+        ShardManager::GetInstance().EnsureBestHeadersSeeded(itGenesis->second);
+        ShardManager::GetInstance().AssertBestHeadersSeeded();
+#endif
         return true;
+    }
 
     try {
         CBlock& block = const_cast<CBlock&>(chainparams.GenesisBlock());
@@ -4638,6 +4744,12 @@ bool LoadGenesisBlock(const CChainParams& chainparams)
         CBlockIndex* pindex = AddToBlockIndex(block);
         if (!ReceivedBlockTransactions(block, state, pindex, blockPos, chainparams.GetConsensus()))
             return error("%s: genesis block not accepted", __func__);
+#if ENABLE_SHARDING
+        // AddToBlockIndex already seeds all shards on height-0; reinforce the
+        // invariant explicitly so LoadGenesisBlock is a single seed entrypoint.
+        ShardManager::GetInstance().EnsureBestHeadersSeeded(pindex);
+        ShardManager::GetInstance().AssertBestHeadersSeeded();
+#endif
     } catch (const std::runtime_error& e) {
         return error("%s: failed to write genesis block: %s", __func__, e.what());
     }

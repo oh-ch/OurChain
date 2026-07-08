@@ -11,8 +11,10 @@
 
 #if ENABLE_SHARDING
 
+#include <condition_variable>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdint.h>
 #include <string>
@@ -101,7 +103,21 @@ public:
     CChain& GetChain(uint32_t shardId);
     const CChain& GetChain(uint32_t shardId) const;
     CBlockIndex* GetpindexBestHeader(uint32_t shardId) const;
+    /**
+     * Update the best-known header for a shard. pindex must be non-null; writing
+     * a null pointer is forbidden so the post-genesis invariant
+     * (GetpindexBestHeader never returns null) cannot be violated by callers.
+     */
     void SetpindexBestHeader(uint32_t shardId, CBlockIndex* pindex);
+    /**
+     * Bitcoin-style invariant for sharding: after genesis is available, every
+     * shard has a non-null best header (tip if the shard chain is already set,
+     * otherwise the shared genesis). Idempotent; safe to call from LoadGenesisBlock
+     * and LoadChainTip. Call sites may then treat GetpindexBestHeader as non-null.
+     */
+    void EnsureBestHeadersSeeded(CBlockIndex* pGenesis);
+    /** Fail fast if any shard is missing a best header (call after seeding). */
+    void AssertBestHeadersSeeded() const;
 
     // Best invalid block accessors
     CBlockIndex*& GetBestInvalid(uint32_t shardId);
@@ -134,7 +150,38 @@ public:
     void SetMergeStatus(MergeStatus status) { m_mergeStatus = status; }
     int GetBestChainHeight() const { return m_bestChainHeight; }
     uint32_t GetCurrentMergeHeight() const { return m_currentMergeHeight; }
-    void CheckMergeCompleted(uint32_t height);
+    int GetLastMergedHeight() const { return m_lastMergedHeight; }
+
+    /**
+     * Record that shard `shardId` has connected the block at `height` for the
+     * current merge frontier (height == lastMergedHeight + 1). When all shards
+     * have arrived at that height the frontier advances and any miner blocked in
+     * WaitForMerge() is woken. Heights at or below lastMergedHeight are ignored
+     * (already merged); heights above the frontier indicate the node is out of
+     * sync with the network frontier and are treated as a fatal error for now.
+     */
+    void CheckMergeCompleted(int height, uint32_t shardId);
+
+    /** Block the caller (miner) until the merge frontier has caught up to this
+     *  shard's own tip, i.e. lastMergedHeight >= myTipHeight. */
+    void WaitForMerge();
+
+    /** Record the highest block height connected on our own shard's chain. */
+    void OnOwnBlockConnected(int height);
+
+    // ---- Merge frontier stall recovery -------------------------------------
+    // Called from net_processing's SendMessages loop. When arrivals at the
+    // current frontier (lastMergedHeight+1) stay incomplete for longer than
+    // MERGE_FRONTIER_STALL_TIMEOUT_US while a merge is IN_PROGRESS, peers
+    // actively re-pull the missing shards' headers/blocks so a lost block
+    // announcement cannot deadlock the frontier forever.
+
+    /** True (per-peer throttled) if this peer should send recovery getheaders now. */
+    bool ShouldRecoverMergeFrontierFromPeer(int64_t nNow, int64_t peerId);
+    /** Fill missingShards with the shard ids that have not yet reached the frontier. */
+    void GetMissingMergeFrontierShards(std::vector<uint32_t>& missingShards);
+    /** The height currently being merged (lastMergedHeight + 1). */
+    int GetMergeFrontierHeight();
 
     // Utilities
     uint256 HashInvalidList(const std::vector<uint256>& vInvalidTxHashes) const;
@@ -154,8 +201,27 @@ private:
     uint32_t m_myId = 0;
     MergeStatus m_mergeStatus = MERGE_STATUS_NONE;
     int m_bestChainHeight = 0;
-    uint32_t m_mergeCount = 0;
     uint32_t m_currentMergeHeight = 0;
+
+    // Merge frontier coordination (replaces the old single-slot m_mergeCount).
+    // The network is assumed to share a single merge frontier at a time, so we
+    // only track arrivals for the height currently being merged
+    // (m_lastMergedHeight + 1).
+    int m_lastMergedHeight = 0;          // highest fully merged height
+    int m_myTipHeight = 0;               // highest height connected on our own shard
+    std::set<uint32_t> m_mergeArrivals;  // shards that reached the current frontier height
+    std::mutex m_mergeMutex;
+    std::condition_variable m_mergeCv;
+
+    // Merge frontier stall recovery state (guarded by m_mergeMutex).
+    static const int64_t MERGE_FRONTIER_STALL_TIMEOUT_US = 3 * 1000000;      // 3s before recovery kicks in
+    static const int64_t MERGE_FRONTIER_RECOVERY_INTERVAL_US = 2 * 1000000;  // re-pull at most every 2s per peer
+    int64_t m_mergeFrontierStallSince = 0;                 // when the current frontier first looked stalled
+    std::map<int64_t, int64_t> m_peerLastMergeRecovery;    // peerId -> last recovery attempt time (us)
+
+    /** Requires m_mergeMutex held. Updates m_mergeFrontierStallSince and reports whether
+     *  an IN_PROGRESS frontier merge has been stalled past the timeout. */
+    bool IsMergeFrontierStalledUnlocked(int64_t nNow);
 
 
     std::map<uint32_t, CChain> m_chains;

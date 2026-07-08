@@ -17,6 +17,8 @@
 #include "utilstrencodings.h" // For strprintf
 #include "validation.h"
 
+#include <cassert>
+
 #if ENABLE_SHARDING
 
 ShardManager& ShardManager::GetInstance()
@@ -78,9 +80,29 @@ CBlockIndex* ShardManager::GetpindexBestHeader(uint32_t shardId) const
 
 void ShardManager::SetpindexBestHeader(uint32_t shardId, CBlockIndex* pindex)
 {
+    assert(pindex != nullptr);
     m_bestHeaders[shardId] = pindex;
     if (pindex->nHeight > m_bestChainHeight) {
         m_bestChainHeight = pindex->nHeight;
+    }
+}
+
+void ShardManager::EnsureBestHeadersSeeded(CBlockIndex* pGenesis)
+{
+    assert(pGenesis != nullptr);
+    assert(pGenesis->nHeight == 0);
+    for (uint32_t shardId = 0; shardId < m_totalCount; shardId++) {
+        if (GetpindexBestHeader(shardId) != nullptr)
+            continue;
+        CBlockIndex* tip = GetChain(shardId).Tip();
+        SetpindexBestHeader(shardId, tip ? tip : pGenesis);
+    }
+}
+
+void ShardManager::AssertBestHeadersSeeded() const
+{
+    for (uint32_t shardId = 0; shardId < m_totalCount; shardId++) {
+        assert(GetpindexBestHeader(shardId) != nullptr);
     }
 }
 
@@ -152,20 +174,117 @@ void ShardManager::ExpireCrossShardRelay(int64_t nNow)
     }
 }
 
-void ShardManager::CheckMergeCompleted(uint32_t height)
+void ShardManager::CheckMergeCompleted(int height, uint32_t shardId)
 {
-    if (height != m_currentMergeHeight) {
-        LogPrintf("Merge check: height changed from %d to %d\n", m_currentMergeHeight, height);
-        m_currentMergeHeight = height;
-        m_mergeCount = 0;
+    std::lock_guard<std::mutex> lock(m_mergeMutex);
+
+    // Already merged at this height: nothing to do here. Such blocks (catch-up
+    // or a late-arriving already-merged block) rely on the block's invalid list
+    // in ConnectBlock's tx loop, not on live merge coordination.
+    if (height <= m_lastMergedHeight) {
+        return;
     }
-    m_mergeCount++;
-    LogPrintf("Merge check: height=%d merge_count=%d total_shards=%d status=%d\n",
-              height, m_mergeCount, m_totalCount, m_mergeStatus);
-    if (m_mergeCount == m_totalCount) {
+
+    // With the merge frontier connect barrier in FindMostWorkChain, only blocks at
+    // lastMergedHeight+1 should reach live merge counting. A higher height here
+    // means this node is ahead of the network frontier (e.g. a barrier gap or a
+    // lost cross-shard announcement); log and bail out instead of aborting so a
+    // single node getting out of sync can never crash the whole shard.
+    if (height != m_lastMergedHeight + 1) {
+        LogPrintf("Merge check: ignoring out-of-frontier height=%d shard=%u (frontier=%d)\n",
+                  height, shardId, m_lastMergedHeight + 1);
+        return;
+    }
+
+    // height == m_lastMergedHeight + 1: normal frontier merge.
+    m_currentMergeHeight = (uint32_t)height;
+    m_mergeArrivals.insert(shardId);
+    LogPrintf("Merge check: height=%d shard=%u arrivals=%u total_shards=%d\n",
+              height, shardId, (unsigned)m_mergeArrivals.size(), m_totalCount);
+
+    if (m_mergeArrivals.size() == m_totalCount) {
+        m_lastMergedHeight = height;
+        m_mergeArrivals.clear();
         m_mergeStatus = MERGE_STATUS_COMPLETED;
+        // Frontier advanced: reset stall tracking so the next height starts clean.
+        m_mergeFrontierStallSince = 0;
+        m_peerLastMergeRecovery.clear();
         LogPrintf("Merge completed at height %d\n", height);
+        m_mergeCv.notify_all();
+    } else {
+        m_mergeStatus = MERGE_STATUS_IN_PROGRESS;
+        // A new frontier just started accumulating arrivals; restart the stall clock.
+        m_mergeFrontierStallSince = 0;
     }
+}
+
+void ShardManager::WaitForMerge()
+{
+    std::unique_lock<std::mutex> lock(m_mergeMutex);
+    m_mergeCv.wait(lock, [this] {
+        return m_lastMergedHeight >= m_myTipHeight;
+    });
+}
+
+void ShardManager::OnOwnBlockConnected(int height)
+{
+    std::lock_guard<std::mutex> lock(m_mergeMutex);
+    if (height > m_myTipHeight) {
+        m_myTipHeight = height;
+    }
+}
+
+bool ShardManager::IsMergeFrontierStalledUnlocked(int64_t nNow)
+{
+    // Only a live, partially-complete frontier merge can be "stalled". Single-shard
+    // deployments and completed/idle frontiers never need recovery.
+    if (m_totalCount <= 1 ||
+        m_mergeStatus != MERGE_STATUS_IN_PROGRESS ||
+        m_mergeArrivals.size() >= m_totalCount) {
+        m_mergeFrontierStallSince = 0;
+        return false;
+    }
+
+    if (m_mergeFrontierStallSince == 0) {
+        m_mergeFrontierStallSince = nNow;
+        return false;
+    }
+    return (nNow - m_mergeFrontierStallSince) >= MERGE_FRONTIER_STALL_TIMEOUT_US;
+}
+
+bool ShardManager::ShouldRecoverMergeFrontierFromPeer(int64_t nNow, int64_t peerId)
+{
+    std::lock_guard<std::mutex> lock(m_mergeMutex);
+    if (!IsMergeFrontierStalledUnlocked(nNow)) {
+        return false;
+    }
+    auto it = m_peerLastMergeRecovery.find(peerId);
+    if (it != m_peerLastMergeRecovery.end() &&
+        (nNow - it->second) < MERGE_FRONTIER_RECOVERY_INTERVAL_US) {
+        return false;
+    }
+    m_peerLastMergeRecovery[peerId] = nNow;
+    return true;
+}
+
+void ShardManager::GetMissingMergeFrontierShards(std::vector<uint32_t>& missingShards)
+{
+    missingShards.clear();
+    std::lock_guard<std::mutex> lock(m_mergeMutex);
+    if (m_mergeArrivals.size() >= m_totalCount) {
+        return;
+    }
+    for (uint32_t i = 0; i < m_totalCount; i++) {
+        if (m_mergeArrivals.count(i) == 0) {
+            missingShards.push_back(i);
+        }
+    }
+}
+
+int ShardManager::GetMergeFrontierHeight()
+{
+    std::lock_guard<std::mutex> lock(m_mergeMutex);
+    return m_lastMergedHeight + 1;
 }
 
 bool ShardManager::IsConflictTransaction(const CTransaction& tx) const

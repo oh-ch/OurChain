@@ -1087,6 +1087,9 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 std::shared_ptr<const CBlock> a_recent_block;
                 std::shared_ptr<const CBlockHeaderAndShortTxIDs> a_recent_compact_block;
                 bool fWitnessesPresentInARecentCompactBlock;
+#if ENABLE_SHARDING
+                CBlockIndex* pindexShardBestHeader = nullptr;
+#endif
 #if !ENABLE_SHARDING
                 {
                     LOCK(cs_most_recent_block);
@@ -1116,12 +1119,13 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                     }
 #if ENABLE_SHARDING
                     CChain& shardChain = ShardManager::GetInstance().GetChain(mi->second->nShardId);
-                    CBlockIndex* pindexShardBestHeader = ShardManager::GetInstance().GetpindexBestHeader(mi->second->nShardId);
+                    pindexShardBestHeader = ShardManager::GetInstance().GetpindexBestHeader(mi->second->nShardId);
+                    assert(pindexShardBestHeader != nullptr); // seeded at genesis / LoadChainTip
                     if (shardChain.Contains(mi->second)) {
                         send = true;
                     } else {
                         static const int nOneMonth = 30 * 24 * 60 * 60;
-                        send = mi->second->IsValid(BLOCK_VALID_SCRIPTS) && (pindexShardBestHeader != nullptr) &&
+                        send = mi->second->IsValid(BLOCK_VALID_SCRIPTS) &&
                                (pindexShardBestHeader->GetBlockTime() - mi->second->GetBlockTime() < nOneMonth) &&
                                (GetBlockProofEquivalentTime(*pindexShardBestHeader, *mi->second, *pindexShardBestHeader, consensusParams) < nOneMonth);
                         if (!send) {
@@ -1149,7 +1153,8 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 // never disconnect whitelisted nodes
                 static const int nOneWeek = 7 * 24 * 60 * 60; // assume > 1 week = historical
 #if ENABLE_SHARDING
-                if (send && connman.OutboundTargetReached(true) && (((ShardManager::GetInstance().GetpindexBestHeader(mi->second->nShardId) != nullptr) && (ShardManager::GetInstance().GetpindexBestHeader(mi->second->nShardId)->GetBlockTime() - mi->second->GetBlockTime() > nOneWeek)) || inv.type == MSG_FILTERED_BLOCK) && !pfrom->fWhitelisted) {
+                // send implies mi was found and pindexShardBestHeader was seeded above
+                if (send && connman.OutboundTargetReached(true) && ((pindexShardBestHeader->GetBlockTime() - mi->second->GetBlockTime() > nOneWeek) || inv.type == MSG_FILTERED_BLOCK) && !pfrom->fWhitelisted) {
                     LogPrint(BCLog::NET, "historical block serving limit reached, disconnect peer=%d\n", pfrom->GetId());
 
                     // disconnect node
@@ -1705,9 +1710,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     for (uint32_t shardId = 0; shardId < shardManager.GetTotalCount(); ++shardId) {
                         CChain& shardChain = shardManager.GetChain(shardId);
                         const CBlockIndex* pindexShardBest = shardManager.GetpindexBestHeader(shardId);
+                        assert(pindexShardBest != nullptr); // seeded at genesis / LoadChainTip
                         connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, shardChain.GetLocator(pindexShardBest), inv.hash, shardId));
                         LogPrint(BCLog::NET, "getheaders-fanout (%d) %s to peer=%d (shard %u)\n",
-                            pindexShardBest ? pindexShardBest->nHeight : -1, inv.hash.ToString(), pfrom->GetId(), shardId);
+                            pindexShardBest->nHeight, inv.hash.ToString(), pfrom->GetId(), shardId);
                     }
                 }
 #else
@@ -1725,8 +1731,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                         auto& shardManager = ShardManager::GetInstance();
                         CChain& shardChain = shardManager.GetChain(shardId);
                         const CBlockIndex* pindexShardBest = shardManager.GetpindexBestHeader(shardId);
+                        assert(pindexShardBest != nullptr); // seeded at genesis / LoadChainTip
                         connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, shardChain.GetLocator(pindexShardBest), inv.hash, shardId));
-                        LogPrint(BCLog::NET, "getheaders (%d) %s to peer=%d (shard %u)\n", pindexShardBest ? pindexShardBest->nHeight : -1, inv.hash.ToString(), pfrom->GetId(), shardId);
+                        LogPrint(BCLog::NET, "getheaders (%d) %s to peer=%d (shard %u)\n", pindexShardBest->nHeight, inv.hash.ToString(), pfrom->GetId(), shardId);
                     }
 #else
                     connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), inv.hash));
@@ -2193,6 +2200,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                         uint32_t shardId = cmpctblock.header.nShardId;
                         CChain& shardChain = shardManager.GetChain(shardId);
                         const CBlockIndex* pindexShardBest = shardManager.GetpindexBestHeader(shardId);
+                        assert(pindexShardBest != nullptr); // seeded at genesis / LoadChainTip
                         connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, shardChain.GetLocator(pindexShardBest), uint256(), shardId));
                     }
 #else
@@ -2533,11 +2541,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (mapBlockIndex.find(headers[0].hashPrevBlock) == mapBlockIndex.end() && nCount < MAX_BLOCKS_TO_ANNOUNCE) {
                 nodestate->nUnconnectingHeaders++;
 #if ENABLE_SHARDING
-                connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, shardChain.GetLocator(shardManager.GetpindexBestHeader(headers[0].nShardId)), uint256(), headers[0].nShardId));
+                CBlockIndex* pindexShardBest = shardManager.GetpindexBestHeader(headers[0].nShardId);
+                assert(pindexShardBest != nullptr); // seeded at genesis / LoadChainTip
+                connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, shardChain.GetLocator(pindexShardBest), uint256(), headers[0].nShardId));
                 LogPrint(BCLog::NET, "received header %s: missing prev block %s, sending getheaders (%d) to end (peer=%d, nUnconnectingHeaders=%d)\n",
                     headers[0].GetHash().ToString(),
                     headers[0].hashPrevBlock.ToString(),
-                    shardManager.GetpindexBestHeader(headers[0].nShardId)->nHeight,
+                    pindexShardBest->nHeight,
                     pfrom->GetId(), nodestate->nUnconnectingHeaders);
 #else
                 connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), uint256()));
@@ -3200,11 +3210,8 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         // Start block sync
 #if ENABLE_SHARDING
         auto& shardManager = ShardManager::GetInstance();
-        for (uint32_t i = 0; i < shardManager.GetTotalCount(); i++) {
-            if (shardManager.GetpindexBestHeader(i) == nullptr) {
-                shardManager.SetpindexBestHeader(i, shardManager.GetChain(i).Tip());
-            }
-        }
+        // Best headers are seeded from shared genesis at LoadGenesisBlock/LoadChainTip.
+        // Do not write Tip() (which may be null mid-startup) back into m_bestHeaders.
         if (pindexBestHeader == nullptr)
             pindexBestHeader = chainActive.Tip();
 
@@ -3212,10 +3219,13 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         bool fSyncStarted = false;
         CBlockIndex* pindexSyncHeader = nullptr;
         if (!state.fSyncStarted && !pto->fClient && !fImporting && !fReindex) {
+            // After init, the Bitcoin-style invariant must hold before sync.
+            shardManager.AssertBestHeadersSeeded();
             // Only actively request headers from a single peer, unless we're close to today.
             for (uint32_t i = 0; i < shardManager.GetTotalCount(); i++) {
                 CBlockIndex* shardBestHeader = shardManager.GetpindexBestHeader(i);
-                if (shardBestHeader && ((nSyncStarted == 0 && fFetch) || shardBestHeader->GetBlockTime() > GetAdjustedTime() - 24 * 60 * 60)) {
+                assert(shardBestHeader != nullptr);
+                if ((nSyncStarted == 0 && fFetch) || shardBestHeader->GetBlockTime() > GetAdjustedTime() - 24 * 60 * 60) {
                     fSyncStarted = true;
                     if (!pindexSyncHeader)
                         pindexSyncHeader = shardBestHeader;
@@ -3344,6 +3354,25 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                     }
                     connman.PushMessage(pto, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
                     state.map_pindexBestHeaderSent[i] = pBestIndex;
+                } else if (fRevertToInv && !pto->vBlockHashesToAnnounce[i].empty()) {
+                    // Bitcoin-style fallback: headers would not connect (or queue too
+                    // long / reorg). Announce only the tip via inv; the peer will
+                    // getheaders (fan-out when hash unknown) and learn nShardId from
+                    // the returned header.
+                    const uint256& hashToAnnounce = pto->vBlockHashesToAnnounce[i].back();
+                    BlockMap::iterator mi = mapBlockIndex.find(hashToAnnounce);
+                    assert(mi != mapBlockIndex.end());
+                    const CBlockIndex* pindex = mi->second;
+                    if (shardChain[pindex->nHeight] != pindex) {
+                        LogPrint(BCLog::NET, "Announcing block %s not on shard %u chain (tip=%s)\n",
+                            hashToAnnounce.ToString(), i,
+                            shardChain.Tip() ? shardChain.Tip()->GetBlockHash().ToString() : "null");
+                    }
+                    if (!PeerHasHeader(&state, pindex)) {
+                        pto->vInventoryBlockToSend.push_back(hashToAnnounce);
+                        LogPrintf("%s: headers announce failed for shard=%u, falling back to inv %s peer=%d\n",
+                            __func__, i, hashToAnnounce.ToString(), pto->GetId());
+                    }
                 }
                 pto->vBlockHashesToAnnounce[i].clear();
             }
@@ -3413,6 +3442,26 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                 }
                 connman.PushMessage(pto, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
                 state.pindexBestHeaderSent = pBestIndex;
+            } else if (fRevertToInv && !pto->vBlockHashesToAnnounce.empty()) {
+                // If falling back to using an inv, just try to inv the tip.
+                // The last entry in vBlockHashesToAnnounce was our tip at some point
+                // in the past.
+                const uint256& hashToAnnounce = pto->vBlockHashesToAnnounce.back();
+                BlockMap::iterator mi = mapBlockIndex.find(hashToAnnounce);
+                assert(mi != mapBlockIndex.end());
+                const CBlockIndex* pindex = mi->second;
+
+                if (chainActive[pindex->nHeight] != pindex) {
+                    LogPrint(BCLog::NET, "Announcing block %s not on main chain (tip=%s)\n",
+                        hashToAnnounce.ToString(), chainActive.Tip()->GetBlockHash().ToString());
+                }
+
+                // If the peer's chain has this block, don't inv it back.
+                if (!PeerHasHeader(&state, pindex)) {
+                    pto->vInventoryBlockToSend.push_back(hashToAnnounce);
+                    LogPrint(BCLog::NET, "%s: sending inv peer=%d hash=%s\n", __func__,
+                        pto->GetId(), hashToAnnounce.ToString());
+                }
             }
             pto->vBlockHashesToAnnounce.clear();
 #endif
@@ -3632,6 +3681,32 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
             }
         }
 
+
+#if ENABLE_SHARDING
+        // Merge-frontier stall recovery: if arrivals at lastMerged+1 stay incomplete
+        // past the stall timeout, re-pull headers for the missing shards from this peer.
+        // Complements announcement inv-fallback when a block announce was lost.
+        if (!pto->fClient && !fImporting && !fReindex && !IsInitialBlockDownload()) {
+            ShardManager& recoveryShardManager = ShardManager::GetInstance();
+            if (recoveryShardManager.ShouldRecoverMergeFrontierFromPeer(nNow, pto->GetId())) {
+                std::vector<uint32_t> missingShards;
+                recoveryShardManager.GetMissingMergeFrontierShards(missingShards);
+                const int frontierHeight = recoveryShardManager.GetMergeFrontierHeight();
+                for (uint32_t missingShardId : missingShards) {
+                    CBlockIndex* pindexShardBest = recoveryShardManager.GetpindexBestHeader(missingShardId);
+                    assert(pindexShardBest != nullptr); // seeded at genesis / LoadChainTip
+                    CChain& missingShardChain = recoveryShardManager.GetChain(missingShardId);
+                    const CBlockIndex* pindexStart = pindexShardBest;
+                    if (pindexStart->pprev)
+                        pindexStart = pindexStart->pprev;
+                    connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETHEADERS,
+                        missingShardChain.GetLocator(pindexStart), uint256(), missingShardId));
+                    LogPrintf("Merge frontier stall recovery: getheaders shard=%u frontier=%d best_header=%d peer=%d\n",
+                        missingShardId, frontierHeight, pindexShardBest->nHeight, pto->GetId());
+                }
+            }
+        }
+#endif
 
         //
         // Message: getdata (blocks)

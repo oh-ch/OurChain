@@ -133,7 +133,7 @@ void BlockAssembler::resetBlock()
 std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, bool fMineWitnessTx)
 {
 #if ENABLE_SHARDING
-    sem_MergeShard.wait();
+    ShardManager::GetInstance().WaitForMerge();
 #endif
     int64_t nTimeStart = GetTimeMicros();
 

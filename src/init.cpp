@@ -1688,6 +1688,19 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
         uiInterface.NotifyBlockTip.disconnect(BlockNotifyGenesisWait);
     }
 
+#if ENABLE_SHARDING
+    // Bitcoin-style invariant: every shard best header is non-null before P2P starts.
+    {
+        LOCK(cs_main);
+        BlockMap::iterator itGenesis = mapBlockIndex.find(chainparams.GetConsensus().hashGenesisBlock);
+        if (itGenesis == mapBlockIndex.end()) {
+            return InitError(_("Incorrect or no genesis block found. Wrong datadir for network?"));
+        }
+        ShardManager::GetInstance().EnsureBestHeadersSeeded(itGenesis->second);
+        ShardManager::GetInstance().AssertBestHeadersSeeded();
+    }
+#endif
+
     // ********************************************************* Step 11: start node
 
 #if ENABLE_CONTRACT
