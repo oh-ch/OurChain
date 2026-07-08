@@ -309,13 +309,17 @@ bool CCoinsViewCache::BatchWrite(CCoinsMap& mapCoins, CContStateMap& mapContStat
         CContStateMap::iterator itOld = it++;
         mapContState.erase(itOld);
     }
-    hashBlock = hashBlockIn;
+    if (!hashBlockIn.IsNull())
+        hashBlock = hashBlockIn;
     return true;
 }
 
 bool CCoinsViewCache::Flush()
 {
-    bool fOk = base->BatchWrite(cacheCoins, cacheContState, hashBlock);
+    uint256 hashBlockFlush = hashBlock;
+    if (hashBlockFlush.IsNull())
+        hashBlockFlush = base->GetBestBlock();
+    bool fOk = base->BatchWrite(cacheCoins, cacheContState, hashBlockFlush);
     cacheCoins.clear();
     cacheContState.clear();
     cachedCoinsUsage = 0;

@@ -1270,8 +1270,17 @@ bool CScriptCheck::operator()()
 int GetSpendHeight(const CCoinsViewCache& inputs)
 {
     LOCK(cs_main);
-    CBlockIndex* pindexPrev = mapBlockIndex.find(inputs.GetBestBlock())->second;
-    return pindexPrev->nHeight + 1;
+#if ENABLE_SHARDING
+    const uint256 hashBlock = inputs.GetShardBestBlock(ShardManager::GetInstance().GetMyId());
+#else
+    const uint256 hashBlock = inputs.GetBestBlock();
+#endif
+    if (hashBlock.IsNull())
+        return 0;
+    BlockMap::iterator it = mapBlockIndex.find(hashBlock);
+    if (it == mapBlockIndex.end())
+        return 0;
+    return it->second->nHeight + 1;
 }
 
 
@@ -1305,7 +1314,10 @@ void InitScriptExecutionCache()
 bool CheckInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck>* pvChecks)
 {
     if (!tx.IsCoinBase()) {
-        if (!Consensus::CheckTxInputs(tx, state, inputs, GetSpendHeight(inputs)))
+        const int nSpendHeight = GetSpendHeight(inputs);
+        if (nSpendHeight <= 0)
+            return state.Invalid(false, 0, "", "bad-txns-spend-height-unavailable");
+        if (!Consensus::CheckTxInputs(tx, state, inputs, nSpendHeight))
             return false;
 
         if (pvChecks)
@@ -1994,11 +2006,17 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     view.SetShardBestBlock(pindex->nShardId, pindex->GetBlockHash());
     if (shardManager.GetMergeStatus() == MERGE_STATUS_COMPLETED) {
         shardManager.ClearMergeState();
-        CBlockIndex* myBestHeader = shardManager.GetpindexBestHeader(shardManager.GetMyId());
-        assert(myBestHeader != nullptr); // seeded at genesis / LoadChainTip
-        view.SetBestBlock(myBestHeader->GetBlockHash());
+        CBlockIndex* myTip = shardManager.GetChain(shardManager.GetMyId()).Tip();
+        assert(myTip != nullptr);
+        view.SetBestBlock(myTip->GetBlockHash());
     } else if (pindex->nShardId == shardManager.GetMyId() && shardManager.GetMergeStatus() == MERGE_STATUS_NONE) {
         view.SetBestBlock(pindex->GetBlockHash());
+    } else {
+        // Foreign-shard connect during merge: keep the global tip so Flush()
+        // does not propagate a null hashBlock into pcoinsTip.
+        const uint256 hashGlobalTip = view.GetBestBlock();
+        if (!hashGlobalTip.IsNull())
+            view.SetBestBlock(hashGlobalTip);
     }
     // Track our own shard's tip so the miner's WaitForMerge() knows when the
     // merge frontier has caught up to a block we produced.
@@ -4243,6 +4261,10 @@ bool LoadChainTip(const CChainParams& chainparams)
         PruneBlockIndexCandidates(shardId);
     }
     chainActive.SetTip(shardManager.GetChain(shardManager.GetMyId()).Tip());
+
+    CBlockIndex* myTip = shardManager.GetChain(shardManager.GetMyId()).Tip();
+    if (myTip != nullptr && pcoinsTip->GetBestBlock() != myTip->GetBlockHash())
+        pcoinsTip->SetBestBlock(myTip->GetBlockHash());
 
     shardManager.EnsureBestHeadersSeeded(pGenesis);
     shardManager.AssertBestHeadersSeeded();

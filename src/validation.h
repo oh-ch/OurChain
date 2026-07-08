@@ -520,9 +520,10 @@ extern CCoinsViewCache* pcoinsTip;
 extern CBlockTreeDB* pblocktree;
 
 /**
- * Return the spend height, which is one more than the inputs.GetBestBlock().
- * While checking, GetBestBlock() refers to the parent block. (protected by cs_main)
- * This is also true for mempool checks.
+ * Return the spend height, which is one more than the chain tip used for
+ * input validation. Under sharding this is the connected tip of this node's
+ * shard; otherwise it follows inputs.GetBestBlock(). Returns 0 if the tip is
+ * unavailable. (protected by cs_main)
  */
 int GetSpendHeight(const CCoinsViewCache& inputs);
 
