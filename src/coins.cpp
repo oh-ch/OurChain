@@ -235,7 +235,10 @@ uint256 CCoinsViewCache::GetShardBestBlock(uint32_t shardId) const
     if (it != mapShardBestBlocks.end()) {
         return it->second;
     }
-    return base->GetShardBestBlock(shardId);
+    const uint256 hash = base->GetShardBestBlock(shardId);
+    if (!hash.IsNull())
+        mapShardBestBlocks[shardId] = hash;
+    return hash;
 }
 #endif
 

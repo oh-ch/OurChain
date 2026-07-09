@@ -2882,11 +2882,21 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey, CCon
         mapRequestCount[wtxNew.GetHash()] = 0;
 
         if (fBroadcastTransactions) {
-            // Broadcast: node decides (AcceptToMemoryPool) — same-shard → mempool, cross-shard → relay only
+#if ENABLE_SHARDING
+            const bool fCrossShard = ShardManager::GetInstance().IsTxCrossShard(wtxNew.GetHash());
+#else
+            const bool fCrossShard = false;
+#endif
             if (!wtxNew.AcceptToMemoryPool(maxTxFee, state)) {
-                LogPrintf("CommitTransaction(): Transaction cannot be broadcast immediately, %s\n", state.GetRejectReason());
+                LogPrintf("CommitTransaction(): %s cannot be broadcast immediately, %s\n",
+                    fCrossShard ? "Cross-shard transaction" : "Transaction",
+                    FormatStateMessage(state));
                 // TODO: if we expect the failure to be long term or permanent, instead delete wtx from the wallet and return failure.
             } else {
+                if (fCrossShard) {
+                    LogPrintf("CommitTransaction(): Cross-shard tx relayed (not in local mempool): %s\n",
+                        wtxNew.GetHash().ToString());
+                }
                 wtxNew.RelayWalletTransaction(connman);
             }
         }

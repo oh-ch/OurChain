@@ -515,7 +515,8 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     }
 
 #if ENABLE_SHARDING
-    // Cross-shard for this node: accept for relay only, do not add to mempool
+    // Cross-shard for this node: accept for relay only, do not add to mempool.
+    // return true means the tx is not rejected (relay map + P2P), not local mempool accept.
     if (ShardManager::GetInstance().IsTxCrossShard(hash)) {
         ShardManager::GetInstance().AddCrossShardTransactionToRelay(ptx);
         return true;
@@ -596,6 +597,9 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
 
             // Bring the best block into scope
             view.GetBestBlock();
+#if ENABLE_SHARDING
+            view.GetShardBestBlock(ShardManager::GetInstance().GetMyId());
+#endif
 
             nValueIn = view.GetValueIn(tx);
 
@@ -1316,7 +1320,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState& state, const CCoinsVi
     if (!tx.IsCoinBase()) {
         const int nSpendHeight = GetSpendHeight(inputs);
         if (nSpendHeight <= 0)
-            return state.Invalid(false, 0, "", "bad-txns-spend-height-unavailable");
+            return state.Invalid(false, REJECT_INVALID, "bad-txns-spend-height-unavailable");
         if (!Consensus::CheckTxInputs(tx, state, inputs, nSpendHeight))
             return false;
 
