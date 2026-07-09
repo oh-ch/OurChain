@@ -4149,11 +4149,28 @@ int CMerkleTx::GetDepthInMainChain(const CBlockIndex*& pindexRet) const
     if (mi == mapBlockIndex.end())
         return 0;
     CBlockIndex* pindex = (*mi).second;
-    if (!pindex || !chainActive.Contains(pindex))
+    if (!pindex)
+        return 0;
+
+#if ENABLE_SHARDING
+    ShardManager& sm = ShardManager::GetInstance();
+    CChain& chain = sm.GetChain(pindex->nShardId);
+    if (!chain.Contains(pindex))
+        return 0;
+    // Wallet confirmation requires the merge frontier to have completed at this
+    // height; per-shard ConnectBlock may run before all shards have arrived.
+    if (pindex->nHeight > sm.GetLastMergedHeight())
+        return 0;
+
+    pindexRet = pindex;
+    return ((nIndex == -1) ? (-1) : 1) * (chain.Height() - pindex->nHeight + 1);
+#else
+    if (!chainActive.Contains(pindex))
         return 0;
 
     pindexRet = pindex;
     return ((nIndex == -1) ? (-1) : 1) * (chainActive.Height() - pindex->nHeight + 1);
+#endif
 }
 
 int CMerkleTx::GetBlocksToMaturity() const

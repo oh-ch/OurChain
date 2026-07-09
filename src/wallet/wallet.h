@@ -242,8 +242,12 @@ public:
     /**
      * Return depth of transaction in blockchain:
      * <0  : conflicts with a transaction this deep in the blockchain
-     *  0  : in memory pool, waiting to be included in a block
-     * >=1 : this many blocks deep in the main chain
+     *  0  : in memory pool, in a block not yet merge-finalized, or unconnected
+     * >=1 : this many blocks deep on the transaction's shard chain after merge
+     *
+     * Under sharding, depth follows the connected chain of the block's shard
+     * and only counts once that height has passed the merge frontier
+     * (height <= lastMergedHeight).
      */
     int GetDepthInMainChain(const CBlockIndex*& pindexRet) const;
     int GetDepthInMainChain() const
