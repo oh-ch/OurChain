@@ -170,6 +170,7 @@ BITCOIN_CORE_H = \
   script/standard.h \
   script/ismine.h \
   sharding/shard.h \
+  sharding/auto_miner.h \
   streams.h \
   support/allocators/secure.h \
   support/allocators/zeroafterfree.h \
@@ -253,6 +254,7 @@ libbitcoin_server_a_SOURCES = \
   script/sigcache.cpp \
   script/ismine.cpp \
   sharding/shard.cpp \
+  sharding/auto_miner.cpp \
   timedata.cpp \
   torcontrol.cpp \
   txdb.cpp \

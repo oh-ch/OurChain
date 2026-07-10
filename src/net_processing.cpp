@@ -1025,6 +1025,30 @@ static void RelayTransaction(const CTransaction& tx, CConnman& connman)
     });
 }
 
+#if ENABLE_SHARDING
+void RelayCrossShardTransaction(const CTransaction& tx, CConnman& connman)
+{
+    const uint256 hash = tx.GetHash();
+    const uint32_t targetShard = ShardManager::GetInstance().GetShardForHash(hash);
+    const CInv inv(MSG_TX, hash);
+    unsigned int nRelayPeers = 0;
+
+    connman.ForEachNode([&](CNode* pnode) {
+        if (!pnode->fWhitelisted && !pnode->fAddnode) {
+            return;
+        }
+        pnode->PushInventory(inv);
+        const CNetMsgMaker msgMaker(pnode->GetSendVersion());
+        connman.PushMessage(pnode, msgMaker.Make(NetMsgType::TX, tx));
+        nRelayPeers++;
+    });
+
+    LogPrint(BCLog::NET,
+        "RelayCrossShardTransaction %s to target shard %u via %u funding-server peer(s)\n",
+        hash.ToString(), targetShard, nRelayPeers);
+}
+#endif
+
 
 static void RelayAddress(const CAddress& addr, bool fReachable, CConnman& connman)
 {
@@ -2026,8 +2050,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // Add to relay map for relaying (similar to how mempool transactions are relayed)
             ShardManager::GetInstance().AddCrossShardTransactionToRelay(ptx);
 
-            // Relay the transaction
-            RelayTransaction(tx, connman);
+            // Relay only to whitelisted peer shard funding server(s).
+            RelayCrossShardTransaction(tx, connman);
             pfrom->nLastTXTime = GetTime();
             return true;
         }
@@ -3575,13 +3599,16 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
 #if ENABLE_SHARDING
                         // Check if this is a cross-shard transaction in ShardManager relay
                         if (ShardManager::GetInstance().HaveCrossShardTransaction(hash)) {
+                            if (!pto->fWhitelisted && !pto->fAddnode) {
+                                continue;
+                            }
                             CTransactionRef txCrossShard = ShardManager::GetInstance().GetCrossShardTransaction(hash);
                             if (txCrossShard) {
                                 if (pto->pfilter && !pto->pfilter->IsRelevantAndUpdate(*txCrossShard)) {
                                     continue;
                                 }
                                 ShardManager::GetInstance().ExpireCrossShardRelay(nNow);
-                                // Send INV for cross-shard transaction
+                                // Send INV for cross-shard transaction (whitelisted peers only)
                                 vInv.push_back(CInv(MSG_TX, hash));
                                 nRelayedTransactions++;
                                 pto->filterInventoryKnown.insert(hash);

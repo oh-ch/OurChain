@@ -29,6 +29,10 @@
 #include "warnings.h"
 #include "zmq.hpp"
 
+#if ENABLE_SHARDING
+#include "sharding/shard.h"
+#endif
+
 #include <fstream>
 #include <stdint.h>
 #include <sys/wait.h>
@@ -477,6 +481,119 @@ UniValue sendtoaddress(const JSONRPCRequest& request)
 
     return wtx.GetHash().GetHex();
 }
+
+#if ENABLE_SHARDING
+// Like SendMoney, but only CommitTransaction when txid % shard_count == local shard.
+// Failed grind attempts never commit (no burned UTXOs). OP_RETURN tag varies the txid.
+static void SendMoneyLocalShard(CWallet* const pwallet, const CTxDestination& address, CAmount nValue, bool fSubtractFeeFromAmount, CWalletTx& wtxNew, const CCoinControl& coin_control)
+{
+    const ShardManager& shards = ShardManager::GetInstance();
+    if (shards.GetTotalCount() <= 1) {
+        SendMoney(pwallet, address, nValue, fSubtractFeeFromAmount, wtxNew, coin_control);
+        return;
+    }
+
+    CAmount curBalance = pwallet->GetBalance();
+    if (nValue <= 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid amount");
+    if (nValue > curBalance)
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+    if (pwallet->GetBroadcastTransactions() && !g_connman) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    const uint32_t myShard = shards.GetMyId();
+    const uint32_t shardCount = shards.GetTotalCount();
+    const int maxTries = std::max(64, static_cast<int>(shardCount) * 64);
+    const CScript scriptPubKey = GetScriptForDestination(address);
+
+    std::string strError;
+    for (int attempt = 0; attempt < maxTries; ++attempt) {
+        CReserveKey reservekey(pwallet);
+        CAmount nFeeRequired = 0;
+        int nChangePosRet = -1;
+        CWalletTx wtxAttempt;
+        wtxAttempt.mapValue = wtxNew.mapValue;
+
+        std::vector<CRecipient> vecSend;
+        vecSend.push_back({scriptPubKey, nValue, fSubtractFeeFromAmount});
+
+        std::vector<unsigned char> grindData(4);
+        grindData[0] = static_cast<unsigned char>((attempt >> 24) & 0xff);
+        grindData[1] = static_cast<unsigned char>((attempt >> 16) & 0xff);
+        grindData[2] = static_cast<unsigned char>((attempt >> 8) & 0xff);
+        grindData[3] = static_cast<unsigned char>(attempt & 0xff);
+        CScript opReturn;
+        opReturn << OP_RETURN << grindData;
+        vecSend.push_back({opReturn, 0, false});
+
+        if (!pwallet->CreateTransaction(vecSend, wtxAttempt, reservekey, nFeeRequired, nChangePosRet, strError, coin_control)) {
+            if (!fSubtractFeeFromAmount && nValue + nFeeRequired > curBalance) {
+                strError = strprintf("Error: This transaction requires a transaction fee of at least %s", FormatMoney(nFeeRequired));
+            }
+            throw JSONRPCError(RPC_WALLET_ERROR, strError);
+        }
+
+        if (shards.GetShardForHash(wtxAttempt.GetHash()) != myShard) {
+            // Drop attempt without CommitTransaction; CReserveKey returns the key.
+            continue;
+        }
+
+        CValidationState state;
+        if (!pwallet->CommitTransaction(wtxAttempt, reservekey, g_connman.get(), state)) {
+            strError = strprintf("Error: The transaction was rejected! Reason given: %s", state.GetRejectReason());
+            throw JSONRPCError(RPC_WALLET_ERROR, strError);
+        }
+        wtxNew = wtxAttempt;
+        return;
+    }
+
+    throw JSONRPCError(RPC_WALLET_ERROR,
+        strprintf("Failed to create same-shard transaction after %d attempts (local shard %u, shard_count %u)",
+            maxTries, myShard, shardCount));
+}
+
+UniValue sendtoaddresslocalshard(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+
+    if (request.fHelp || request.params.size() != 2)
+        throw std::runtime_error(
+            "sendtoaddresslocalshard \"address\" amount\n"
+            "\nSend an amount to a given address, grinding until txid % shard_count\n"
+            "equals this node's shard id, then broadcast. Same sharding rule as\n"
+            "normal relay; only the successful attempt is committed.\n" +
+            HelpRequiringPassphrase(pwallet) +
+            "\nArguments:\n"
+            "1. \"address\"            (string, required) The bitcoin address to send to.\n"
+            "2. \"amount\"             (numeric or string, required) The amount in " +
+            CURRENCY_UNIT + " to send. eg 0.1\n"
+                            "\nResult:\n"
+                            "\"txid\"                  (string) The transaction id.\n"
+                            "\nExamples:\n" +
+            HelpExampleCli("sendtoaddresslocalshard", "\"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\" 0.1") +
+            HelpExampleRpc("sendtoaddresslocalshard", "\"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\", 0.1"));
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    CBitcoinAddress address(request.params[0].get_str());
+    if (!address.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Bitcoin address");
+
+    CAmount nAmount = AmountFromValue(request.params[1]);
+    if (nAmount <= 0)
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount for send");
+
+    CWalletTx wtx;
+    CCoinControl coin_control;
+    EnsureWalletIsUnlocked(pwallet);
+    SendMoneyLocalShard(pwallet, address.Get(), nAmount, false, wtx, coin_control);
+    return wtx.GetHash().GetHex();
+}
+#endif // ENABLE_SHARDING
 
 UniValue sendtocontract(const JSONRPCRequest& request)
 {
@@ -3414,6 +3531,9 @@ static const CRPCCommand commands[] =
         {"wallet", "sendfrom", &sendfrom, false, {"fromaccount", "toaddress", "amount", "minconf", "comment", "comment_to"}},
         {"wallet", "sendmany", &sendmany, false, {"fromaccount", "amounts", "minconf", "comment", "subtractfeefrom", "replaceable", "conf_target", "estimate_mode"}},
         {"wallet", "sendtoaddress", &sendtoaddress, false, {"address", "amount", "comment", "comment_to", "subtractfeefromamount", "replaceable", "conf_target", "estimate_mode"}},
+#if ENABLE_SHARDING
+        {"wallet", "sendtoaddresslocalshard", &sendtoaddresslocalshard, false, {"address", "amount"}},
+#endif
         {"wallet", "sendtocontract", &sendtocontract, false, {"ctid", "amount", "comment", "comment_to", "subtractfeefromamount", "replaceable", "conf_target", "estimate_mode"}},
         {"wallet", "setaccount", &setaccount, true, {"address", "account"}},
         {"wallet", "settxfee", &settxfee, true, {"amount"}},

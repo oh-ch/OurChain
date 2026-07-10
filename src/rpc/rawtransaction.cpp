@@ -12,6 +12,7 @@
 #include "keystore.h"
 #include "merkleblock.h"
 #include "net.h"
+#include "net_processing.h"
 #include "policy/policy.h"
 #include "policy/rbf.h"
 #include "primitives/transaction.h"
@@ -24,6 +25,9 @@
 #include "uint256.h"
 #include "utilstrencodings.h"
 #include "validation.h"
+#if ENABLE_SHARDING
+#include "sharding/shard.h"
+#endif
 #ifdef ENABLE_WALLET
 #include "wallet/rpcwallet.h"
 #include "wallet/wallet.h"
@@ -956,6 +960,17 @@ UniValue sendrawtransaction(const JSONRPCRequest& request)
     }
     if (!g_connman)
         throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+
+    CTransactionRef txToBroadcast = mempool.get(hashTx);
+#if ENABLE_SHARDING
+    if (!txToBroadcast) {
+        txToBroadcast = ShardManager::GetInstance().GetCrossShardTransaction(hashTx);
+    }
+    if (txToBroadcast && ShardManager::GetInstance().IsTxCrossShard(hashTx)) {
+        RelayCrossShardTransaction(*txToBroadcast, *g_connman);
+        return hashTx.GetHex();
+    }
+#endif
 
     CInv inv(MSG_TX, hashTx);
     g_connman->ForEachNode([&inv](CNode* pnode) {

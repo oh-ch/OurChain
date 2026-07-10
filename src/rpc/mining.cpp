@@ -26,6 +26,10 @@
 #include "validationinterface.h"
 #include "warnings.h"
 
+#if ENABLE_SHARDING
+#include "sharding/auto_miner.h"
+#endif
+
 #include <memory>
 #include <stdint.h>
 
@@ -1016,6 +1020,26 @@ UniValue estimaterawfee(const JSONRPCRequest& request)
     return result;
 }
 
+#if ENABLE_SHARDING
+UniValue setshardautomine(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            "setshardautomine enable\n"
+            "\nEnable or disable shard background auto-mining (for benchmark measurement).\n"
+            "Control lives outside GPoW; merge gating still applies via WaitForMerge().\n"
+            "\nArguments:\n"
+            "1. enable      (boolean, required) true to enable, false to disable\n"
+            "\nResult:\n"
+            "enabled          (boolean) The new auto-mining state\n");
+    }
+
+    const bool enable = request.params[0].get_bool();
+    SetShardAutoMineEnabled(enable);
+    return UniValue(enable);
+}
+#endif
+
 static const CRPCCommand commands[] =
     {
         //  category              name                      actor (function)         okSafeMode
@@ -1027,6 +1051,9 @@ static const CRPCCommand commands[] =
         {"mining", "submitblock", &submitblock, true, {"hexdata", "dummy"}},
 
         {"generating", "generatetoaddress", &generatetoaddress, true, {"nblocks", "address", "maxtries"}},
+#if ENABLE_SHARDING
+        {"mining", "setshardautomine", &setshardautomine, true, {"enable"}},
+#endif
 
         {"util", "estimatefee", &estimatefee, true, {"nblocks"}},
         {"util", "estimatesmartfee", &estimatesmartfee, true, {"conf_target", "estimate_mode"}},

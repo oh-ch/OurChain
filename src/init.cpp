@@ -59,6 +59,7 @@
 
 #if ENABLE_SHARDING
 #include "sharding/shard.h"
+#include "sharding/auto_miner.h"
 #endif
 
 #ifndef WIN32
@@ -202,6 +203,9 @@ void Shutdown()
     StopREST();
     StopRPC();
     StopHTTPServer();
+#if ENABLE_SHARDING
+    StopShardAutoMiner();
+#endif
 #ifdef ENABLE_WALLET
     for (CWalletRef pwallet : vpwallets) {
         pwallet->Flush(false);
@@ -760,6 +764,12 @@ bool AppInitServers(boost::thread_group& threadGroup)
         return false;
     if (!StartHTTPServer())
         return false;
+#if ENABLE_SHARDING
+    if (!StartShardAutoMiner()) {
+        LogPrintf("Shard auto-miner failed to start\n");
+        return false;
+    }
+#endif
     return true;
 }
 
