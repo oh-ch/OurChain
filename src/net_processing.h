@@ -71,6 +71,8 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
 inline void AddCrossShardTransactionToRelay(const CTransactionRef& tx) {
     ShardManager::GetInstance().AddCrossShardTransactionToRelay(tx);
 }
+/** Relay a cross-shard transaction only to whitelisted peers (peer shard funding servers). */
+void RelayCrossShardTransaction(const CTransaction& tx, CConnman& connman);
 #endif
 
 #endif // BITCOIN_NET_PROCESSING_H

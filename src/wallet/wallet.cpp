@@ -1649,6 +1649,12 @@ bool CWalletTx::RelayWalletTransaction(CConnman* connman)
         if (InMempool() || AcceptToMemoryPool(maxTxFee, state)) {
             LogPrintf("Relaying wtx %s\n", GetHash().ToString());
             if (connman) {
+#if ENABLE_SHARDING
+                if (ShardManager::GetInstance().IsTxCrossShard(GetHash())) {
+                    RelayCrossShardTransaction(*tx, *connman);
+                    return true;
+                }
+#endif
                 CInv inv(MSG_TX, GetHash());
                 connman->ForEachNode([&inv](CNode* pnode) {
                     pnode->PushInventory(inv);
