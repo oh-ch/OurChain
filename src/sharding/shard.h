@@ -131,7 +131,8 @@ public:
     void ClearAll();
 
     // Cross-shard transaction relay (relay without mempool; protected by cs_main at call sites)
-    void AddCrossShardTransactionToRelay(const CTransactionRef& tx);
+    /** Insert into the cross-shard relay map. Returns true if newly inserted. */
+    bool AddCrossShardTransactionToRelay(const CTransactionRef& tx);
     bool HaveCrossShardTransaction(const uint256& hash) const;
     CTransactionRef GetCrossShardTransaction(const uint256& hash) const;
     void ExpireCrossShardRelay(int64_t nNow);

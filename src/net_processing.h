@@ -67,12 +67,13 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
 
 #if ENABLE_SHARDING
 #include "sharding/shard.h"
-/** Add cross-shard transaction to relay (forward to ShardManager) */
-inline void AddCrossShardTransactionToRelay(const CTransactionRef& tx) {
-    ShardManager::GetInstance().AddCrossShardTransactionToRelay(tx);
+/** Add cross-shard transaction to relay (forward to ShardManager). Returns true if new. */
+inline bool AddCrossShardTransactionToRelay(const CTransactionRef& tx) {
+    return ShardManager::GetInstance().AddCrossShardTransactionToRelay(tx);
 }
-/** Relay a cross-shard transaction only to whitelisted peers (peer shard funding servers). */
-void RelayCrossShardTransaction(const CTransaction& tx, CConnman& connman);
+/** Relay a cross-shard transaction (INV only) to whitelisted/addnode peers.
+ *  Optional pfromExclude is not announced to (avoids echo loops). */
+void RelayCrossShardTransaction(const CTransaction& tx, CConnman& connman, CNode* pfromExclude = nullptr);
 #endif
 
 #endif // BITCOIN_NET_PROCESSING_H

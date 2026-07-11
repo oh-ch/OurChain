@@ -1026,20 +1026,26 @@ static void RelayTransaction(const CTransaction& tx, CConnman& connman)
 }
 
 #if ENABLE_SHARDING
-void RelayCrossShardTransaction(const CTransaction& tx, CConnman& connman)
+void RelayCrossShardTransaction(const CTransaction& tx, CConnman& connman, CNode* pfromExclude)
 {
     const uint256 hash = tx.GetHash();
     const uint32_t targetShard = ShardManager::GetInstance().GetShardForHash(hash);
     const CInv inv(MSG_TX, hash);
     unsigned int nRelayPeers = 0;
 
+    // INV-only to funding-server peers. Full TX is served on getdata from the
+    // cross-shard relay map. Never echo back to the peer that just sent it.
     connman.ForEachNode([&](CNode* pnode) {
+        if (pnode == pfromExclude) {
+            return;
+        }
         if (!pnode->fWhitelisted && !pnode->fAddnode) {
             return;
         }
+        if (pnode->filterInventoryKnown.contains(hash)) {
+            return;
+        }
         pnode->PushInventory(inv);
-        const CNetMsgMaker msgMaker(pnode->GetSendVersion());
-        connman.PushMessage(pnode, msgMaker.Make(NetMsgType::TX, tx));
         nRelayPeers++;
     });
 
@@ -2041,23 +2047,28 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 #if ENABLE_SHARDING
         // Check if transaction belongs to our shard
         if (ShardManager::GetInstance().IsTxCrossShard(tx.GetHash())) {
-            // Cross-shard transaction: don't add to mempool but relay it
+            // Cross-shard transaction: don't add to mempool but relay it once.
             uint256 txHash = tx.GetHash();
             uint32_t txShard = ShardManager::GetInstance().GetShardForHash(txHash);
             LogPrint(BCLog::NET, "Cross-shard transaction %s (shard %u, we are shard %u), relaying without adding to mempool\n",
                 txHash.ToString(), txShard, ShardManager::GetInstance().GetMyId());
 
-            // Add to relay map for relaying (similar to how mempool transactions are relayed)
-            ShardManager::GetInstance().AddCrossShardTransactionToRelay(ptx);
-
-            // Relay only to whitelisted peer shard funding server(s).
-            RelayCrossShardTransaction(tx, connman);
+            // Dedup: only the first insert fans out. Re-receiving the same tx
+            // from whitelisted peers must not re-relay (echo storm).
+            const bool isNew = ShardManager::GetInstance().AddCrossShardTransactionToRelay(ptx);
+            if (isNew) {
+                RelayCrossShardTransaction(tx, connman, pfrom);
+            } else {
+                LogPrint(BCLog::NET, "Cross-shard transaction %s already known, not re-relaying\n",
+                    txHash.ToString());
+            }
             pfrom->nLastTXTime = GetTime();
             return true;
         }
 #endif
 
-        if (!AlreadyHave(inv) && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn)) {
+        const bool fAlreadyHaveTx = AlreadyHave(inv);
+        if (!fAlreadyHaveTx && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn)) {
             mempool.check(pcoinsTip);
             RelayTransaction(tx, connman);
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
@@ -2179,10 +2190,16 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 // Never relay transactions that we would assign a non-zero DoS
                 // score for, as we expect peers to do the same with us in that
                 // case.
+                //
+                // Do not force-relay duplicates we already knew about: two
+                // whitelisted funding servers otherwise echo forever.
                 int nDoS = 0;
-                if (!state.IsInvalid(nDoS) || nDoS == 0) {
+                if (!fAlreadyHaveTx && (!state.IsInvalid(nDoS) || nDoS == 0)) {
                     LogPrintf("Force relaying tx %s from whitelisted peer=%d\n", tx.GetHash().ToString(), pfrom->GetId());
                     RelayTransaction(tx, connman);
+                } else if (fAlreadyHaveTx) {
+                    LogPrint(BCLog::NET, "Not force-relaying already-known tx %s from whitelisted peer=%d\n",
+                        tx.GetHash().ToString(), pfrom->GetId());
                 } else {
                     LogPrintf("Not relaying invalid transaction %s from whitelisted peer=%d (%s)\n", tx.GetHash().ToString(), pfrom->GetId(), FormatStateMessage(state));
                 }
@@ -3709,11 +3726,18 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         }
 
 
+        //
+        // Message: getdata (blocks) — also used by merge-frontier stall recovery.
+        //
+        std::vector<CInv> vGetData;
+
 #if ENABLE_SHARDING
         // Merge-frontier stall recovery: if arrivals at lastMerged+1 stay incomplete
-        // past the stall timeout, re-pull headers for the missing shards from this peer.
-        // Complements announcement inv-fallback when a block announce was lost.
-        if (!pto->fClient && !fImporting && !fReindex && !IsInitialBlockDownload()) {
+        // past the stall timeout, re-pull missing shard headers/blocks from funding
+        // server peers only (skip tx-gen clients to avoid useless fanout).
+        // Complements announcement inv-fallback when a block announce or body was lost.
+        if (!pto->fClient && !fImporting && !fReindex && !IsInitialBlockDownload() &&
+            (pto->fWhitelisted || pto->fAddnode)) {
             ShardManager& recoveryShardManager = ShardManager::GetInstance();
             if (recoveryShardManager.ShouldRecoverMergeFrontierFromPeer(nNow, pto->GetId())) {
                 std::vector<uint32_t> missingShards;
@@ -3722,6 +3746,25 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                 for (uint32_t missingShardId : missingShards) {
                     CBlockIndex* pindexShardBest = recoveryShardManager.GetpindexBestHeader(missingShardId);
                     assert(pindexShardBest != nullptr); // seeded at genesis / LoadChainTip
+
+                    // If we already have the frontier header but not the body,
+                    // clear any stuck in-flight entry and re-request getdata from
+                    // this funding-server peer (getheaders alone cannot heal that).
+                    CBlockIndex* pindexFrontier = pindexShardBest->GetAncestor(frontierHeight);
+                    if (pindexFrontier && pindexFrontier->nHeight == frontierHeight &&
+                        !(pindexFrontier->nStatus & BLOCK_HAVE_DATA)) {
+                        const uint256 hash = pindexFrontier->GetBlockHash();
+                        MarkBlockAsReceived(hash);
+                        if (state.nBlocksInFlight < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
+                            uint32_t nFetchFlags = GetFetchFlags(pto);
+                            vGetData.push_back(CInv(MSG_BLOCK | nFetchFlags, hash));
+                            MarkBlockAsInFlight(pto->GetId(), hash, pindexFrontier);
+                            LogPrintf("Merge frontier stall recovery: getdata shard=%u height=%d hash=%s peer=%d\n",
+                                missingShardId, frontierHeight, hash.ToString(), pto->GetId());
+                        }
+                        continue;
+                    }
+
                     CChain& missingShardChain = recoveryShardManager.GetChain(missingShardId);
                     const CBlockIndex* pindexStart = pindexShardBest;
                     if (pindexStart->pprev)
@@ -3735,10 +3778,6 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         }
 #endif
 
-        //
-        // Message: getdata (blocks)
-        //
-        std::vector<CInv> vGetData;
         if (!pto->fClient && (fFetch || !IsInitialBlockDownload()) && state.nBlocksInFlight < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
 #if ENABLE_SHARDING
             for (uint32_t i = 0; i < ShardManager::GetInstance().GetTotalCount(); i++) {

@@ -145,14 +145,16 @@ void ShardManager::ClearAll()
     m_crossShardRelayExpiration.clear();
 }
 
-void ShardManager::AddCrossShardTransactionToRelay(const CTransactionRef& tx)
+bool ShardManager::AddCrossShardTransactionToRelay(const CTransactionRef& tx)
 {
     uint256 hash = tx->GetHash();
     int64_t nNow = GetTimeMicros();
     auto ret = m_crossShardRelay.insert(std::make_pair(hash, tx));
     if (ret.second) {
         m_crossShardRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
+        return true;
     }
+    return false;
 }
 
 bool ShardManager::HaveCrossShardTransaction(const uint256& hash) const
